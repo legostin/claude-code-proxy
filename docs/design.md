@@ -208,3 +208,33 @@ tail of its stderr in the pane, [Start] again), the upstream is unreachable
   touched by rules. The sidecar counts them per host and sends the counts
   (`skipped`) every two seconds while they change; the Domains view offers
   each host, and its `*.domain`, to track.
+
+## 0.5.0: setup in one press, and Claude Code left whole
+
+- **The self guard** (`sidecar/selfguard.mjs`). Claude Code trusts no CA of
+  ours. Anthropic's and Claude's hosts are never decrypted. While `scutil
+  --proxy` shows the system proxy pointing at this proxy (checked every
+  three seconds, and at once when the mod writes its backup), a local
+  CONNECT is traced to its process (`lsof -Fpn` on the client port, then the
+  `ps -o args=` tree); one that descends from `claude` (the native build, the
+  app, its daemon and pty hosts) or from node running
+  `@anthropic-ai/claude-code` is tunnelled. Checked end to end with a shell
+  named `claude` and an orphaned curl.
+- **The system proxy** (`shared/systemproxy.mjs`). The service is the one
+  the default route leaves by. Its web, secure-web and bypass settings are
+  kept in `<data>/system-proxy-backup.json` before the change; the bypass
+  list gains Claude's hosts. Put back on stop, at the session's end, and by
+  the sidecar when its parent becomes launchd. networksetup runs as the
+  user (it needs no administrator on this Mac), with one `osascript`
+  administrator dialog as the fallback.
+- **Devices.** iOS: `simctl list devices available -j`, booted first, then
+  the newest runtime; **Use** boots (`simctl boot`, `bootstatus -b`), opens
+  Simulator, adds the CA and turns the system proxy on. Android: `emulator
+  -list-avds`, running ones matched through `adb emu avd name`; **Start
+  through the proxy** runs the AVD with `-http-proxy` in the background.
+  macOS: whether the keychain trusts the CA (`security verify-cert`), and
+  **Trust CA on this Mac** (`security add-trusted-cert`, the system's own
+  dialog).
+- **Layout.** Each setup tab leads with its one-press path, then a framed
+  section for a phone (the exact address, Listen on LAN, the QR code), then
+  the CA and the guide.

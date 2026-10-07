@@ -23,3 +23,5 @@ jobs:
         run: node --test sidecar/proxy.spec.mjs
       - name: Run the rules engine's tests
         run: node --test sidecar/rules.spec.mjs
+      - name: Run the self guard's tests (Claude Code is never decrypted)
+        run: node --test sidecar/selfguard.spec.mjs

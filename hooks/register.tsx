@@ -3,7 +3,29 @@ import type { EngineInterface, Register, RenderElement, RenderInput } from 'clau
 
 import { describeRule, isTracked, matchesHostPattern, normalizeHostPattern, parseRules, ruleErrors, scriptsOf, wildcardFor } from '../shared/rules.mjs'
 import type { Rule } from '../shared/rules.mjs'
-import type { ProxyFlow, ProxyRuleEntry, ProxyRules, ProxySetupTab, ProxyStatus, ProxyTracking, ProxyView } from '../types'
+import type {
+  ProxyAndroidDevice,
+  ProxyDevices,
+  ProxyFlow,
+  ProxyRuleEntry,
+  ProxyRules,
+  ProxySetupTab,
+  ProxySimulator,
+  ProxyStatus,
+  ProxySystemProxy,
+  ProxyTracking,
+  ProxyView,
+} from '../types'
+import {
+  asAdminScript,
+  enableCommands,
+  needsAdmin,
+  parseBypass,
+  parseProxyState,
+  parseServiceOrder,
+  restoreCommands,
+} from '../shared/systemproxy.mjs'
+import type { SystemProxyBackup } from '../shared/systemproxy.mjs'
 import {
   buildTree,
   clip,
@@ -81,6 +103,17 @@ const expandedAtom = atom({ plugin: 'proxy', key: 'expanded' } as const, [] as s
 const trackingAtom = atom({ plugin: 'proxy', key: 'tracking' } as const, { enabled: false, patterns: [] } as ProxyTracking)
 /** Hosts that passed through untracked since the proxy started, with counts. */
 const skippedAtom = atom({ plugin: 'proxy', key: 'skipped' } as const, {} as Record<string, number>)
+const devicesAtom = atom({ plugin: 'proxy', key: 'devices' } as const, {
+  simulators: [],
+  simulatorError: null,
+  avds: [],
+  android: [],
+  androidError: null,
+} as ProxyDevices)
+const systemProxyAtom = atom({ plugin: 'proxy', key: 'systemProxy' } as const, { isOn: false, service: null, isOurs: false } as ProxySystemProxy)
+const caSimulatorsAtom = atom({ plugin: 'proxy', key: 'caSimulators' } as const, [] as string[])
+const busyAtom = atom({ plugin: 'proxy', key: 'busy' } as const, '')
+const macTrustAtom = atom({ plugin: 'proxy', key: 'macTrust' } as const, 'unknown' as 'unknown' | 'trusted' | 'untrusted')
 /** The project's rules file as last read. */
 const rulesAtom = atom({ plugin: 'proxy', key: 'rules' } as const, { file: null, entries: [], fileErrors: [] } as ProxyRules)
 
@@ -131,7 +164,8 @@ async function setupFacts($: EngineInterface, options: Options): Promise<SetupFa
 async function showStatus($: EngineInterface): Promise<void> {
   const status = await read($, statusAtom)
   const flows = await read($, flowsAtom)
-  if (status.phase === 'running') $.ui.status(`⇄ proxy :${status.port} · ${flows.length}`)
+  const isSystem = (await read($, systemProxyAtom)).isOn
+  if (status.phase === 'running') $.ui.status(`⇄ proxy :${status.port} · ${flows.length}${isSystem ? ' · system proxy' : ''}`)
   else if (status.phase === 'starting') $.ui.status('⇄ proxy: starting…')
   else if (status.phase === 'failed') $.ui.status('⇄ proxy: failed (/proxy)')
   else $.ui.status(undefined)
@@ -201,6 +235,7 @@ async function startProxy($: EngineInterface, options: Options): Promise<void> {
       '--no-decrypt', options.noDecrypt,
       '--rules', await rulesFileOf($),
       '--tracking', await writeTrackingFile($),
+      '--system-proxy-backup', await systemProxyBackupOf($),
       '--trust', await trustFileOf($),
     ],
   })
@@ -240,6 +275,9 @@ async function startProxy($: EngineInterface, options: Options): Promise<void> {
           } else if (event.t === 'rules') {
             // the file changed on disk (an edit, a git checkout): read it again
             await loadRules($)
+          } else if (event.t === 'system-proxy') {
+            const isOn = event.isOn
+            await update($, systemProxyAtom, (now): ProxySystemProxy => ({ ...(now ?? { service: null, isOurs: false }), isOn }))
           } else if (event.t === 'skipped') {
             await update($, skippedAtom, () => event.hosts)
           } else if (event.t === 'network') {
@@ -281,6 +319,8 @@ async function startProxy($: EngineInterface, options: Options): Promise<void> {
 async function stopProxy($: EngineInterface): Promise<void> {
   await update($, wantedAtom, () => false)
   await revertAndroid($)
+  // nothing may stay pointed at a proxy that is gone
+  await disableSystemProxy($, true)
   const rt = runtime
   const status = await read($, statusAtom)
   const pid = rt?.pid ?? status.pid
@@ -587,6 +627,241 @@ async function allowRuleScripts($: EngineInterface, id: string): Promise<void> {
   await say($, `Scripts of ${id} approved; the proxy runs them from now on.`)
 }
 
+// --- the macOS system proxy -------------------------------------------------------------
+//
+// Turned on for the network service the default route leaves by, with Claude's
+// hosts on its bypass list; what was there before is kept in a backup file,
+// put back on stop, at the session's end, or by the sidecar if Claude Code
+// dies. networksetup may want an administrator: then one macOS password dialog.
+
+async function systemProxyBackupOf($: EngineInterface): Promise<string> {
+  return `${await dataDirOf($)}/system-proxy-backup.json`
+}
+
+async function readSystemProxyBackup($: EngineInterface): Promise<SystemProxyBackup | null> {
+  try {
+    const text = await $.fs.read(await systemProxyBackupOf($))
+    return text.trim() ? (JSON.parse(text) as SystemProxyBackup) : null
+  } catch {
+    return null
+  }
+}
+
+/** Runs networksetup commands, as an administrator when it must; answers why not, or null. */
+async function runNetworkCommands($: EngineInterface, commands: string[][]): Promise<string | null> {
+  for (const argv of commands) {
+    const ran = await $.process.run(argv).catch(error => ({ exitCode: 1, stdout: '', stderr: String(error) }))
+    const output = `${ran.stdout}${ran.stderr}`
+    if (ran.exitCode === 0 && !/\*\* Error/i.test(output)) continue
+    if (!needsAdmin(output) && !/\*\* Error/i.test(output)) return output.trim() || `${argv[0]} failed`
+    const admin = await $.process.run(['osascript', '-e', asAdminScript(commands)], { timeoutMs: 180_000 })
+    return admin.exitCode === 0 ? null : admin.stderr.includes('-128') ? 'cancelled' : admin.stderr.trim() || 'the administrator dialog failed'
+  }
+  return null
+}
+
+async function defaultNetworkService($: EngineInterface): Promise<string | null> {
+  const route = await $.process.run(['route', '-n', 'get', 'default']).catch(() => null)
+  const device = /interface:\s*(\S+)/.exec(route?.stdout ?? '')?.[1]
+  const order = parseServiceOrder((await $.process.run(['networksetup', '-listnetworkserviceorder'])).stdout)
+  return order.find(service => service.device === device && !service.isDisabled)?.name ?? order.find(service => service.name === 'Wi-Fi')?.name ?? null
+}
+
+async function enableSystemProxy($: EngineInterface, options: Options): Promise<void> {
+  const status = await read($, statusAtom)
+  if (status.phase !== 'running') await startProxy($, options)
+  const port = status.phase === 'running' ? status.port : options.port
+  const service = await defaultNetworkService($)
+  if (!service) return say($, 'Could not tell which network service this Mac uses.')
+  const kept = await readSystemProxyBackup($)
+  // a backup already there is the state before we first turned it on: keep that one
+  const backup: SystemProxyBackup = kept ?? {
+    service,
+    port,
+    previous: {
+      web: parseProxyState((await $.process.run(['networksetup', '-getwebproxy', service])).stdout),
+      secure: parseProxyState((await $.process.run(['networksetup', '-getsecurewebproxy', service])).stdout),
+      bypass: parseBypass((await $.process.run(['networksetup', '-getproxybypassdomains', service])).stdout),
+    },
+  }
+  await $.fs.write(await systemProxyBackupOf($), JSON.stringify(backup, null, 2))
+  await update($, busyAtom, () => `Pointing ${service} at the proxy…`)
+  const failure = await runNetworkCommands($, enableCommands(service, port, backup.previous.bypass))
+  await update($, busyAtom, () => '')
+  if (failure) {
+    if (!kept) await $.fs.write(await systemProxyBackupOf($), '')
+    return say($, `The system proxy is unchanged: ${failure}.`)
+  }
+  await update($, systemProxyAtom, (): ProxySystemProxy => ({ isOn: true, service, isOurs: true }))
+  await showStatus($)
+  await say($, `This Mac's ${service} now goes through the proxy. Claude's own traffic bypasses it; it goes back when the proxy stops.`)
+}
+
+async function disableSystemProxy($: EngineInterface, quiet = false): Promise<void> {
+  const backup = await readSystemProxyBackup($)
+  if (!backup) {
+    if (!quiet) await say($, 'The system proxy was not turned on from here; switch it off in System Settings → Network → Details → Proxies.')
+    return
+  }
+  const failure = await runNetworkCommands($, restoreCommands(backup))
+  if (failure) {
+    if (!quiet) await say($, `Could not put the system proxy back: ${failure}.`)
+    return
+  }
+  await $.fs.write(await systemProxyBackupOf($), '')
+  await update($, systemProxyAtom, (): ProxySystemProxy => ({ isOn: false, service: backup.service, isOurs: false }))
+  await showStatus($)
+  if (!quiet) await say($, `${backup.service} is back to its own proxy settings.`)
+}
+
+// --- this Mac's trust in the CA ------------------------------------------------------------
+//
+// Safari and native apps behind the system proxy need the CA in the keychain;
+// the separate browser and the simulators do not.
+
+async function checkMacTrust($: EngineInterface): Promise<void> {
+  const ca = (await read($, statusAtom)).ca
+  if (!ca) return
+  const ran = await $.process.run(['security', 'verify-cert', '-c', ca.path]).catch(() => null)
+  const output = `${ran?.stdout ?? ''}${ran?.stderr ?? ''}`
+  await update($, macTrustAtom, () => (/successful/i.test(output) ? 'trusted' : /NOT_TRUSTED|failed/i.test(output) ? 'untrusted' : 'unknown'))
+}
+
+async function trustCaOnMac($: EngineInterface): Promise<void> {
+  const ca = (await read($, statusAtom)).ca
+  if (!ca) return say($, 'There is no certificate yet: start the proxy.')
+  const home = (await $.env.get('HOME')) ?? ''
+  await update($, busyAtom, () => 'Waiting for you to confirm in the macOS dialog…')
+  try {
+    const ran = await $.process.run(['security', 'add-trusted-cert', '-r', 'trustRoot', '-k', `${home}/Library/Keychains/login.keychain-db`, ca.path], {
+      timeoutMs: 180_000,
+    })
+    await checkMacTrust($)
+    await say($, ran.exitCode === 0 ? 'This Mac trusts the proxy CA now (login keychain).' : `The keychain refused: ${ran.stderr.trim() || 'cancelled'}`)
+  } finally {
+    await update($, busyAtom, () => '')
+  }
+}
+
+// --- simulators, emulators, devices ------------------------------------------------------
+
+function runtimeLabel(key: string): string {
+  // com.apple.CoreSimulator.SimRuntime.iOS-18-2 → iOS 18.2
+  const tail = key.split('.').pop() ?? key
+  return tail.replace(/-(\d+)-(\d+)$/, ' $1.$2').replace(/-/g, ' ')
+}
+
+function runtimeRank(runtime: string): number {
+  const match = /(\d+)\.(\d+)/.exec(runtime)
+  return match ? Number(match[1]) * 100 + Number(match[2]) : 0
+}
+
+async function scanSimulators($: EngineInterface): Promise<void> {
+  const ran = await $.process.run(['xcrun', 'simctl', 'list', 'devices', 'available', '-j'], { timeoutMs: 30_000 }).catch(error => ({
+    exitCode: 1,
+    stdout: '',
+    stderr: String(error),
+  }))
+  if (ran.exitCode !== 0) {
+    await update($, devicesAtom, (d): ProxyDevices => ({ ...d!, simulators: [], simulatorError: 'Xcode’s simctl is not available: install Xcode to use simulators.' }))
+    return
+  }
+  type Listed = { udid: string; name: string; state: string; isAvailable?: boolean }
+  const devices = (JSON.parse(ran.stdout) as { devices: Record<string, Listed[]> }).devices
+  const simulators: ProxySimulator[] = []
+  for (const [runtime, list] of Object.entries(devices)) {
+    if (!/iOS/.test(runtime)) continue
+    for (const device of list) simulators.push({ udid: device.udid, name: device.name, runtime: runtimeLabel(runtime), state: device.state })
+  }
+  simulators.sort(
+    (a, b) =>
+      Number(b.state === 'Booted') - Number(a.state === 'Booted') ||
+      runtimeRank(b.runtime) - runtimeRank(a.runtime) ||
+      Number(b.name.startsWith('iPhone')) - Number(a.name.startsWith('iPhone')) ||
+      a.name.localeCompare(b.name),
+  )
+  await update($, devicesAtom, (d): ProxyDevices => ({ ...d!, simulators, simulatorError: null }))
+}
+
+async function androidTool($: EngineInterface, name: 'adb' | 'emulator'): Promise<string | null> {
+  const onPath = await $.process.run([name, name === 'adb' ? 'version' : '-version']).catch(() => null)
+  if (onPath?.exitCode === 0) return name
+  const home = (await $.env.get('HOME')) ?? ''
+  const sdk = (await $.env.get('ANDROID_HOME')) ?? `${home}/Library/Android/sdk`
+  const path = name === 'adb' ? `${sdk}/platform-tools/adb` : `${sdk}/emulator/emulator`
+  return (await $.fs.exists(path).catch(() => false)) ? path : null
+}
+
+async function scanAndroid($: EngineInterface): Promise<void> {
+  const emulator = await androidTool($, 'emulator')
+  const tool = await adb($)
+  if (!emulator && !tool) {
+    await update($, devicesAtom, (d): ProxyDevices => ({ ...d!, avds: [], android: [], androidError: 'The Android SDK was not found (looked on PATH and in ~/Library/Android/sdk).' }))
+    return
+  }
+  const avds = emulator
+    ? (await $.process.run([emulator, '-list-avds'])).stdout.split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('INFO'))
+    : []
+  const android: ProxyAndroidDevice[] = []
+  if (tool) {
+    for (const serial of await androidDevices($, tool)) {
+      const isEmulator = serial.startsWith('emulator-')
+      const avd = isEmulator ? (await $.process.run([tool, '-s', serial, 'emu', 'avd', 'name'])).stdout.split('\n')[0]?.trim() || null : null
+      android.push({ serial, avd, isEmulator })
+    }
+  }
+  await update($, devicesAtom, (d): ProxyDevices => ({ ...d!, avds, android, androidError: null }))
+}
+
+async function installCaOnSimulator($: EngineInterface, udid: string): Promise<boolean> {
+  const status = await read($, statusAtom)
+  if (!status.ca) {
+    await say($, 'There is no certificate yet: start the proxy.')
+    return false
+  }
+  const ran = await $.process.run(['xcrun', 'simctl', 'keychain', udid, 'add-root-cert', status.ca.path], { timeoutMs: 60_000 })
+  if (ran.exitCode !== 0) {
+    await say($, `Could not add the CA: ${ran.stderr.trim() || 'simctl failed'}`)
+    return false
+  }
+  await update($, caSimulatorsAtom, list => [...new Set([...(list ?? []), udid])])
+  return true
+}
+
+/** Boots the simulator if needed, puts the CA in, points this Mac at the proxy, brings Simulator up. */
+async function useSimulator($: EngineInterface, udid: string, options: Options): Promise<void> {
+  const simulator = (await read($, devicesAtom)).simulators.find(sim => sim.udid === udid)
+  const name = simulator?.name ?? 'the simulator'
+  try {
+    if ((await read($, statusAtom)).phase !== 'running') await startProxy($, options)
+    if (simulator?.state !== 'Booted') {
+      await update($, busyAtom, () => `Booting ${name}…`)
+      await $.process.run(['xcrun', 'simctl', 'boot', udid], { timeoutMs: 120_000 })
+    }
+    await $.process.run(['open', '-a', 'Simulator', '--args', '-CurrentDeviceUDID', udid])
+    await update($, busyAtom, () => `Waiting for ${name} to finish booting…`)
+    await $.process.run(['xcrun', 'simctl', 'bootstatus', udid, '-b'], { timeoutMs: 240_000 })
+    await update($, busyAtom, () => `Adding the CA to ${name}…`)
+    if (!(await installCaOnSimulator($, udid))) return
+    if (!(await read($, systemProxyAtom)).isOn) await enableSystemProxy($, options)
+    await scanSimulators($)
+    if ((await read($, systemProxyAtom)).isOn) await say($, `${name} is ready: the CA is in, and its traffic goes through the proxy.`)
+  } finally {
+    await update($, busyAtom, () => '')
+  }
+}
+
+async function startAvd($: EngineInterface, avd: string, options: Options): Promise<void> {
+  const emulator = await androidTool($, 'emulator')
+  if (!emulator) return say($, 'The Android emulator was not found.')
+  if ((await read($, statusAtom)).phase !== 'running') await startProxy($, options)
+  const port = (await read($, statusAtom)).port || options.port
+  const quote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`
+  // the emulator outlives this call: started in the background, its traffic sent to the proxy from boot
+  await $.process.run(['/bin/sh', '-c', `nohup ${quote(emulator)} -avd ${quote(avd)} -http-proxy http://127.0.0.1:${port} >/dev/null 2>&1 &`])
+  await say($, `${avd} is starting with its traffic going through the proxy. When it is up, "Open CA page" installs the certificate.`)
+}
+
 // --- tracked domains ------------------------------------------------------------------
 //
 // Per session: kept in $.state, in $.store under the session's id (so a
@@ -803,7 +1078,7 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
           key="setup"
           hotkey="n"
           label="Setup"
-          onPress={() => void update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'setup' }))}
+          onPress={() => void openSetupTab($, view.setupTab)}
         />
       </Box>
       {status.error ? <Text color="error">{status.error}</Text> : null}
@@ -1011,7 +1286,33 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
   const run = (action: () => Promise<void>) => () => void action()
 
   let actions: RenderElement[] = []
+  let deviceBlock: RenderElement | null = null
   let guide = ''
+  const devices = await read($, devicesAtom)
+  const caSimulators = await read($, caSimulatorsAtom)
+  const systemProxy = await read($, systemProxyAtom)
+  const busy = await read($, busyAtom)
+  const systemProxyBlock = (
+    <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="row" gap={1} flexWrap="wrap">
+        <Text bold>System proxy</Text>
+        <Text color={systemProxy.isOn ? 'success' : 'subtle'}>
+          {systemProxy.isOn ? `on${systemProxy.service ? ` (${systemProxy.service})` : ''}` : 'off'}
+        </Text>
+        <Button
+          key="system-proxy"
+          hotkey="m"
+          variant={systemProxy.isOn ? undefined : 'primary'}
+          label={systemProxy.isOn ? 'Turn off' : 'Turn on for this Mac'}
+          onPress={run(() => (systemProxy.isOn ? disableSystemProxy($) : enableSystemProxy($, options)))}
+        />
+      </Box>
+      <Text dimColor>
+        Safari, native apps and the iOS Simulator use it. Claude Code is never decrypted: its hosts bypass the proxy and its own connections are
+        tunnelled. It is put back when the proxy stops.
+      </Text>
+    </Box>
+  )
   if (tab === 'browser') {
     const found = await findBrowsers($)
     guide = browserGuide(facts, found.map(f => f.browser))
@@ -1026,14 +1327,81 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
     ))
   } else if (tab === 'ios') {
     guide = iosGuide(facts)
-    actions = [
-      <Button key="sim-ca" hotkey="a" variant="primary" label="CA → simulators" onPress={run(() => addCaToSimulators($))} />,
-      <Button key="copy-sys-on" label="system proxy on" onPress={copy('sys-on')} />,
-      <Button key="copy-sys-off" label="off" onPress={copy('sys-off')} />,
-    ]
+    const sims = devices.simulators
+    deviceBlock = (
+      <Box flexDirection="column" marginTop={1}>
+        <Box flexDirection="row" gap={1}>
+          <Text bold>Simulators</Text>
+          <Button plain dimColor key="sims-refresh" label="refresh" onPress={run(() => scanSimulators($))} />
+        </Box>
+        {devices.simulatorError ? <Text color="warning">{devices.simulatorError}</Text> : null}
+        {!devices.simulatorError && sims.length === 0 ? <Text dimColor>No iOS simulators found: add one in Xcode → Window → Devices and Simulators.</Text> : null}
+        {sims.slice(0, 10).map((sim, i) => {
+          const isBooted = sim.state === 'Booted'
+          const hasCa = caSimulators.includes(sim.udid)
+          return (
+            <Box key={`sim-${sim.udid}`} flexDirection="row" gap={1} flexWrap="wrap">
+              <Text color={isBooted ? 'success' : 'subtle'}>{isBooted ? '●' : '○'}</Text>
+              <Text>{sim.name}</Text>
+              <Text dimColor>{sim.runtime}</Text>
+              {hasCa ? <Text color="success">CA ✓</Text> : null}
+              <Button
+                key={`sim-use:${sim.udid}`}
+                hotkey={i === 0 ? 'u' : undefined}
+                variant={i === 0 ? 'primary' : undefined}
+                label={isBooted ? (hasCa && systemProxy.isOn ? 'Open' : 'Use') : 'Boot & use'}
+                onPress={run(() => useSimulator($, sim.udid, options))}
+              />
+            </Box>
+          )
+        })}
+        {sims.length > 10 ? <Text dimColor>…and {sims.length - 10} more in Xcode.</Text> : null}
+        <Text dimColor>Use boots it, puts the CA in, and turns the system proxy on: the simulator has no proxy setting of its own.</Text>
+      </Box>
+    )
+    actions = [<Button key="sim-ca" label="CA → every booted simulator" onPress={run(() => addCaToSimulators($))} />]
   } else if (tab === 'android') {
     guide = androidGuide(facts)
     const pointed = await read($, emulatorsAtom)
+    const usb = devices.android.filter(device => !device.isEmulator)
+    deviceBlock = (
+      <Box flexDirection="column" marginTop={1}>
+        <Box flexDirection="row" gap={1}>
+          <Text bold>Emulators</Text>
+          <Button plain dimColor key="android-refresh" label="refresh" onPress={run(() => scanAndroid($))} />
+        </Box>
+        {devices.androidError ? <Text color="warning">{devices.androidError}</Text> : null}
+        {!devices.androidError && devices.avds.length === 0 ? <Text dimColor>No emulators (AVDs) found: create one in Android Studio → Device Manager.</Text> : null}
+        {devices.avds.map((avd, i) => {
+          const running = devices.android.find(device => device.avd === avd)
+          return (
+            <Box key={`avd-${avd}`} flexDirection="row" gap={1} flexWrap="wrap">
+              <Text color={running ? 'success' : 'subtle'}>{running ? '●' : '○'}</Text>
+              <Text>{avd}</Text>
+              {running ? <Text dimColor>{running.serial}</Text> : null}
+              {running ? (
+                <Button key={`avd-ca:${avd}`} label="Open CA page" onPress={run(() => openCaPageOnAndroid($))} />
+              ) : (
+                <Button
+                  key={`avd-start:${avd}`}
+                  hotkey={i === 0 ? 'u' : undefined}
+                  variant={i === 0 ? 'primary' : undefined}
+                  label="Start through the proxy"
+                  onPress={run(() => startAvd($, avd, options))}
+                />
+              )}
+            </Box>
+          )
+        })}
+        {usb.length ? <Text bold>USB devices</Text> : null}
+        {usb.map(device => (
+          <Box key={`usb-${device.serial}`} flexDirection="row" gap={1}>
+            <Text>{device.serial}</Text>
+            {pointed.includes(device.serial) ? <Text color="success">through the proxy</Text> : null}
+          </Box>
+        ))}
+      </Box>
+    )
     actions = [
       <Button key="adb-on" hotkey="a" variant="primary" label="Android → proxy" onPress={run(() => pointAndroid($))} />,
       <Button key="adb-off" label={pointed.length ? `Revert (${pointed.length})` : 'Revert'} onPress={run(() => revertAndroid($))} />,
@@ -1042,10 +1410,19 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
     ]
   } else {
     guide = cliGuide(facts)
+    const macTrust = await read($, macTrustAtom)
+    deviceBlock = (
+      <Box flexDirection="row" gap={1} flexWrap="wrap" marginTop={1}>
+        <Text bold>This Mac trusts the CA</Text>
+        <Text color={macTrust === 'trusted' ? 'success' : 'subtle'}>{macTrust === 'trusted' ? 'yes ✓' : macTrust === 'untrusted' ? 'no' : '?'}</Text>
+        {macTrust !== 'trusted' ? (
+          <Button key="mac-trust" hotkey="t" variant="primary" label="Trust CA on this Mac" onPress={run(() => trustCaOnMac($))} />
+        ) : null}
+        <Text dimColor>Safari and native apps need it; the separate browser and the simulators do not.</Text>
+      </Box>
+    )
     actions = [
-      <Button key="copy-trust" label="trust CA" onPress={copy('trust')} />,
-      <Button key="copy-sys-on" label="system proxy on" onPress={copy('sys-on')} />,
-      <Button key="copy-sys-off" label="off" onPress={copy('sys-off')} />,
+      <Button key="copy-trust" label="trust CA (command)" onPress={copy('trust')} />,
       <Button key="copy-env" label="env" onPress={copy('env')} />,
       <Button key="copy-curl" label="curl" onPress={copy('curl')} />,
     ]
@@ -1110,37 +1487,53 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
             hotkey={t.hotkey}
             variant={t.tab === tab ? 'primary' : undefined}
             label={t.label}
-            onPress={() => {
-              void update($, noticeAtom, () => '')
-              void update($, viewAtom, (v): ProxyView => ({ ...v, setupTab: t.tab }))
-            }}
+            onPress={() => void openSetupTab($, t.tab)}
           />
         ))}
       </Box>
-      <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1} marginTop={1}>
-        <Text bold>Proxy settings to enter{isRunning ? '' : ' (once the proxy runs)'}</Text>
-        {targets.map(target => (
-          <Box key={`target-${target.client}`} flexDirection="row" flexWrap="wrap">
-            <Text>{target.client.padEnd(18)} </Text>
-            {target.host ? (
-              <Text bold color={target.isRemote && isLocalOnly ? 'warning' : 'success'}>
+      {!isRunning ? (
+        <Box flexDirection="row" gap={1} marginTop={1}>
+          <Text color="warning">The proxy is not running.</Text>
+          <Button key="start" hotkey="s" variant="primary" label="Start" onPress={run(() => startProxy($, options))} />
+        </Box>
+      ) : null}
+      {notice ? <Text color="success">{notice}</Text> : null}
+      {busy ? <Text color="claude">◌ {busy}</Text> : null}
+
+      <Box flexDirection="column" marginTop={1}>
+        <Text bold underline>
+          {tab === 'browser' ? 'Separate browser' : tab === 'ios' ? 'Simulator' : tab === 'android' ? 'Emulator and USB devices' : 'This Mac'}
+        </Text>
+        {tab === 'ios' ? systemProxyBlock : null}
+        {deviceBlock}
+        {tab === 'cli' ? systemProxyBlock : null}
+        {targets
+          .filter(target => !target.isRemote && tab !== 'ios' && tab !== 'browser')
+          .map(target => (
+            <Box key={`target-${target.client}`} flexDirection="row" flexWrap="wrap" gap={1}>
+              <Text dimColor>{target.client}:</Text>
+              <Text bold>
                 Server {target.host}  Port {target.port}
               </Text>
-            ) : (
-              <Text color="warning">no address a phone can reach</Text>
-            )}
-            <Text dimColor>  {target.how}</Text>
+              <Text dimColor>{target.how}</Text>
+            </Box>
+          ))}
+        {actions.length ? (
+          <Box flexDirection="row" gap={1} flexWrap="wrap" marginTop={1}>
+            {actions}
           </Box>
-        ))}
-        {remote && phone ? (
-          <Text dimColor>
-            {phone.address} is this Mac on {phone.label}
-            {others.length ? `; not ${others.map(entry => `${entry.address} (${kindName(entry.kind)})`).join(', ')}` : ''}.
-          </Text>
         ) : null}
-        {remote ? (
-          <Box flexDirection="row" gap={1} flexWrap="wrap">
-            {phone ? (
+      </Box>
+
+      {remote ? (
+        <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1} marginTop={1}>
+          <Text bold>{tab === 'ios' ? 'iPhone / iPad' : 'Android phone over Wi-Fi'}</Text>
+          {phone ? (
+            <Box flexDirection="row" gap={1} flexWrap="wrap">
+              <Text>Proxy to enter:</Text>
+              <Text bold color={isLocalOnly ? 'warning' : 'success'}>
+                Server {phone.address}  Port {facts.status.port}
+              </Text>
               <Button
                 key="copy-ip"
                 hotkey="i"
@@ -1151,39 +1544,37 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
                   )
                 }
               />
-            ) : null}
-            {isLocalOnly ? (
+            </Box>
+          ) : (
+            <Text color="warning">This Mac has no address a phone could reach: connect it to Wi-Fi or Ethernet, on the phone's network.</Text>
+          )}
+          {phone ? (
+            <Text dimColor>
+              {phone.address} is this Mac on {phone.label}
+              {others.length ? `; not ${others.map(entry => `${entry.address} (${kindName(entry.kind)})`).join(', ')}` : ''}.
+            </Text>
+          ) : null}
+          {isLocalOnly ? (
+            <Box flexDirection="row" gap={1} flexWrap="wrap">
               <Text color="warning">Listen on is local: a phone cannot reach the proxy yet.</Text>
-            ) : null}
-            {isLocalOnly ? (
               <Button key="listen-lan" hotkey="l" variant="primary" label="Listen on LAN" onPress={() => void setListen('lan')()} />
-            ) : (
-              <Button key="listen-local" label="Back to this Mac only" onPress={() => void setListen('local')()} />
-            )}
-          </Box>
-        ) : null}
+            </Box>
+          ) : null}
+          {qrBlock}
+          {!isLocalOnly ? <Button plain dimColor key="listen-local" label="back to this Mac only" onPress={() => void setListen('local')()} /> : null}
+          <Text dimColor>Connecting a phone? Turn on Domains (d) to record only your app: its system services keep working.</Text>
+        </Box>
+      ) : null}
+
+      <Box flexDirection="column" marginTop={1}>
+        {status.ca ? (
+          <Text dimColor>
+            CA {status.ca.path} · SHA-256 {status.ca.fingerprint256}
+          </Text>
+        ) : (
+          <Text dimColor>The certificate is made the first time the proxy starts.</Text>
+        )}
       </Box>
-      {status.ca ? (
-        <Box flexDirection="column">
-          <Text dimColor>CA: {status.ca.path}</Text>
-          <Text dimColor>SHA-256: {status.ca.fingerprint256}</Text>
-        </Box>
-      ) : (
-        <Text dimColor>The certificate is made the first time the proxy starts.</Text>
-      )}
-      {!isRunning ? (
-        <Box flexDirection="row" gap={1}>
-          <Text color="warning">The proxy is not running.</Text>
-          <Button key="start" hotkey="s" variant="primary" label="Start" onPress={run(() => startProxy($, options))} />
-        </Box>
-      ) : null}
-      {notice ? <Text color="success">{notice}</Text> : null}
-      {actions.length ? (
-        <Box flexDirection="row" gap={1} flexWrap="wrap" marginTop={1}>
-          {actions}
-        </Box>
-      ) : null}
-      {qrBlock}
       <Markdown key="guide" text={guide} />
     </Box>
   )
@@ -1271,6 +1662,15 @@ async function drawDomains($: EngineInterface, e: PaneEvent): Promise<RenderElem
       </Box>
     </Box>
   )
+}
+
+async function openSetupTab($: EngineInterface, tab: ProxySetupTab): Promise<void> {
+  await update($, noticeAtom, () => '')
+  await update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'setup', setupTab: tab }))
+  // what is on this Mac now: the lists draw from the last look
+  if (tab === 'ios') await scanSimulators($).catch(() => undefined)
+  if (tab === 'android') await scanAndroid($).catch(() => undefined)
+  if (tab === 'cli') await checkMacTrust($).catch(() => undefined)
 }
 
 async function openRules($: EngineInterface): Promise<void> {
@@ -1650,8 +2050,8 @@ export const register: Register = (on, raw) => {
         await openPane($)
         return { text: `The Proxy pane shows the requests as a ${arg}.` }
       case 'setup':
-        await update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'setup' }))
         await openPane($)
+        await openSetupTab($, (await read($, viewAtom)).setupTab)
         return { text: 'Client setup is open in the Proxy pane.' }
       case '':
         await openPane($)

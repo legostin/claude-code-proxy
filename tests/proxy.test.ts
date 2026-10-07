@@ -97,12 +97,27 @@ function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string
     while (!isKilled) await clock.sleep(100)
     return { value: { code: null, signal: 'SIGTERM' } }
   })
+  const ran: string[] = []
   on('process.run', async ($, e) => {
     if (e.argv[0] === 'kill') {
       killed.push(e.argv[1]!)
       isKilled = true
     }
-    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    ran.push(e.argv.join(' '))
+    const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+    const line = e.argv.join(' ')
+    if (line === 'xcrun simctl list devices available -j') return ok(JSON.stringify(SIMULATORS))
+    if (line === 'route -n get default') return ok('   route to: default\n  interface: en0\n')
+    if (line === 'networksetup -listnetworkserviceorder') return ok('(1) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n')
+    if (line.startsWith('networksetup -getwebproxy') || line.startsWith('networksetup -getsecurewebproxy')) return ok('Enabled: No\nServer: \nPort: 0\n')
+    if (line.startsWith('networksetup -getproxybypassdomains')) return ok('*.local\n169.254/16\n')
+    if (line === 'emulator -list-avds') return ok('Pixel_8_API_35\nPixel_6\n')
+    if (line.startsWith('security verify-cert')) {
+      return ok(ran.some(command => command.startsWith('security add-trusted-cert')) ? '...certificate verification successful.\n' : 'Cert Verify Result: CSSMERR_TP_NOT_TRUSTED\n')
+    }
+    if (line === 'adb devices') return ok('List of devices attached\nemulator-5554\tdevice\n')
+    if (line === 'adb -s emulator-5554 emu avd name') return ok('Pixel_8_API_35\nOK\n')
+    return ok('')
   })
   on('fs.read', async ($, e) => {
     const text = files[e.path]
@@ -126,7 +141,7 @@ function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string
     statuses.push(e.text)
     return { value: undefined }
   })
-  return { spawned, killed, statuses, configSets, files }
+  return { spawned, killed, statuses, configSets, files, ran }
 }
 
 // Each act waits for the sidecar loop the start left running to go quiet.
@@ -215,7 +230,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await clock.advance(250)
     await ui.press({ key: 'setup' })
 
-    expect(await ui.find({ text: /SHA-256: AB:CD/ })).toBeDefined()
+    expect(await ui.find({ text: /SHA-256 AB:CD/ })).toBeDefined()
     expect(await ui.find({ type: 'Markdown', key: 'guide' })).toBeDefined()
     await ui.press({ key: 'tab-ios' })
     expect(await ui.find({ key: 'sim-ca' })).toBeDefined()
@@ -241,7 +256,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.press({ key: 'tab-ios' })
 
     expect(await ui.find({ text: /Server 10\.7\.9\.5 {2}Port 8899/ })).toBeDefined()
-    expect(await ui.find({ text: /Server 127\.0\.0\.1 {2}Port 8899/ })).toBeDefined()
+    // the simulator needs no address typed: Use and the system proxy do it
+    expect(await ui.find({ key: 'system-proxy' })).toBeDefined()
     expect(await ui.find({ text: /not 10\.20\.133\.214 \(VPN\)/ })).toBeDefined()
     expect(await ui.find({ key: 'copy-ip' })).toBeDefined()
     await ui.press({ key: 'listen-lan' })
@@ -494,6 +510,116 @@ test('Claude tracks domains through the tool, and sees what passed through', SLO
   const off = String((await $.tool.call({ tool: 'mcp__proxy__track_domains', enabled: false })).result)
   expect(off).toContain('The list is off')
   await ui.press({ key: 'toggle' })
+  await clock.advance(200)
+  await ui.unmount()
+})
+
+const SIMULATORS = {
+  devices: {
+    'com.apple.CoreSimulator.SimRuntime.iOS-17-5': [{ udid: 'SIM-15', name: 'iPhone 15', state: 'Shutdown', isAvailable: true }],
+    'com.apple.CoreSimulator.SimRuntime.iOS-18-2': [
+      { udid: 'SIM-16PRO', name: 'iPhone 16 Pro', state: 'Shutdown', isAvailable: true },
+      { udid: 'SIM-16', name: 'iPhone 16', state: 'Booted', isAvailable: true },
+    ],
+    'com.apple.CoreSimulator.SimRuntime.watchOS-11-2': [{ udid: 'WATCH', name: 'Apple Watch', state: 'Shutdown', isAvailable: true }],
+  },
+}
+const BACKUP_FILE = `${HOME}/.claude/proxy-mod/system-proxy-backup.json`
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: a simulator is booted, given the CA and put behind the system proxy in one press`, SLOW, async ($, on) => {
+    const clock = mock.clock(on)
+    const machine = fakeMachine(on, clock)
+    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(250)
+    await ui.press({ key: 'setup' })
+    await ui.press({ key: 'tab-ios' })
+
+    // booted first, then the newest runtime; no watches
+    const rows = await ui.findAll({ type: 'Button' })
+    const simKeys = rows.map(row => row.key).filter(key => key?.startsWith('sim-use:'))
+    expect(simKeys).toEqual(['sim-use:SIM-16', 'sim-use:SIM-16PRO', 'sim-use:SIM-15'])
+    expect((await ui.find({ key: 'sim-use:SIM-16PRO' }))?.text).toBe('Boot & use')
+    expect((await ui.find({ key: 'system-proxy' }))?.text).toBe('Turn on for this Mac')
+
+    await ui.press({ key: 'sim-use:SIM-16PRO' })
+    const did = machine.ran.join('\n')
+    expect(did).toContain('xcrun simctl boot SIM-16PRO')
+    expect(did).toContain('open -a Simulator --args -CurrentDeviceUDID SIM-16PRO')
+    expect(did).toContain('xcrun simctl bootstatus SIM-16PRO -b')
+    expect(did).toContain(`xcrun simctl keychain SIM-16PRO add-root-cert ${READY.ca.path}`)
+    expect(did).toContain('networksetup -setwebproxy Wi-Fi 127.0.0.1 8899')
+    expect(did).toContain('networksetup -setsecurewebproxy Wi-Fi 127.0.0.1 8899')
+    expect(did).toMatch(/networksetup -setproxybypassdomains Wi-Fi \*\.local 169\.254\/16 .*\*\.anthropic\.com/)
+    expect(JSON.parse(machine.files[BACKUP_FILE]!)).toMatchObject({ service: 'Wi-Fi', previous: { bypass: ['*.local', '169.254/16'] } })
+    expect(await ui.find({ text: /on \(Wi-Fi\)/ })).toBeDefined()
+    expect(await ui.find({ text: 'CA ✓' })).toBeDefined()
+
+    // off puts back exactly what was there
+    await ui.press({ key: 'system-proxy' })
+    expect(machine.ran.join('\n')).toContain('networksetup -setwebproxystate Wi-Fi off')
+    expect(machine.ran.join('\n')).toContain('networksetup -setproxybypassdomains Wi-Fi *.local 169.254/16')
+    expect(machine.files[BACKUP_FILE]).toBe('')
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(200)
+    await ui.unmount()
+  })
+
+  test(`${surface}: emulators are listed and started through the proxy`, SLOW, async ($, on) => {
+    const clock = mock.clock(on)
+    const machine = fakeMachine(on, clock)
+    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(250)
+    await ui.press({ key: 'setup' })
+    await ui.press({ key: 'tab-android' })
+    expect(await ui.find({ key: 'avd-ca:Pixel_8_API_35' })).toBeDefined()
+    expect(await ui.find({ text: 'emulator-5554' })).toBeDefined()
+    await ui.press({ key: 'avd-start:Pixel_6' })
+    expect(machine.ran.join('\n')).toContain("nohup 'emulator' -avd 'Pixel_6' -http-proxy http://127.0.0.1:8899")
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(200)
+    await ui.unmount()
+  })
+}
+
+test('the macOS tab trusts the CA in one press', SLOW, async ($, on) => {
+  const clock = mock.clock(on)
+  const machine = fakeMachine(on, clock)
+  const ui = await $.ui.mount({ plugin: 'proxy', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'toggle' })
+  await clock.advance(250)
+  await ui.press({ key: 'setup' })
+  await ui.press({ key: 'tab-cli' })
+  expect(await ui.find({ text: 'no' })).toBeDefined()
+  await ui.press({ key: 'mac-trust' })
+  expect(machine.ran.join('\n')).toContain(`security add-trusted-cert -r trustRoot -k ${HOME}/Library/Keychains/login.keychain-db ${READY.ca.path}`)
+  expect(await ui.find({ text: 'yes ✓' })).toBeDefined()
+  expect(await ui.find({ key: 'mac-trust' })).toBeUndefined()
+  await ui.press({ key: 'back' })
+  await ui.press({ key: 'toggle' })
+  await clock.advance(200)
+  await ui.unmount()
+})
+
+test('stopping the proxy puts the system proxy back', SLOW, async ($, on) => {
+  const clock = mock.clock(on)
+  const machine = fakeMachine(on, clock)
+  const ui = await $.ui.mount({ plugin: 'proxy', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'toggle' })
+  await clock.advance(250)
+  await ui.press({ key: 'setup' })
+  await ui.press({ key: 'tab-cli' })
+  await ui.press({ key: 'system-proxy' })
+  expect(machine.files[BACKUP_FILE]).toContain('"service": "Wi-Fi"')
+  await ui.press({ key: 'back' })
+  await ui.press({ key: 'toggle' })
+  expect(machine.ran.join('\n')).toContain('networksetup -setsecurewebproxystate Wi-Fi off')
+  expect(machine.files[BACKUP_FILE]).toBe('')
+  expect(machine.spawned[0]).toContain('--system-proxy-backup')
   await clock.advance(200)
   await ui.unmount()
 })

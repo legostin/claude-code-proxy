@@ -16,7 +16,8 @@ import net from 'node:net'
 import os from 'node:os'
 import tls from 'node:tls'
 import zlib from 'node:zlib'
-import { readFileSync, watchFile } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { readFileSync, watchFile, writeFileSync } from 'node:fs'
 import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
@@ -36,6 +37,8 @@ import {
   urlOf,
 } from './engine.mjs'
 import { networkAddresses } from './network.mjs'
+import { CLAUDE_HOSTS, createSelfGuard } from './selfguard.mjs'
+import { restoreCommands } from '../shared/systemproxy.mjs'
 import { isTracked } from '../shared/rules.mjs'
 
 const MAGIC_HOST = 'claude.proxy'
@@ -57,6 +60,8 @@ const { values: args } = parseArgs({
     rules: { type: 'string' },
     trust: { type: 'string' },
     tracking: { type: 'string' },
+    'system-proxy-backup': { type: 'string' },
+    'assume-system-proxy': { type: 'boolean', default: false },
   },
 })
 
@@ -321,8 +326,8 @@ function countSkipped(host) {
 }
 
 // A tunnel nobody records: for hosts the session does not track.
-function quietTunnel(clientSocket, host, port) {
-  countSkipped(host)
+function quietTunnel(clientSocket, host, port, isCounted = true) {
+  if (isCounted) countSkipped(host)
   if (!isLocalClient(clientOf(clientSocket)) && isLoopback(host)) return clientSocket.destroy()
   const upstream = net.connect({ port, host, ...reachFor(clientOf(clientSocket)) })
   upstream.pipe(clientSocket)
@@ -334,8 +339,8 @@ function quietTunnel(clientSocket, host, port) {
 }
 
 // A plain request nobody records, and no rule touches.
-function passThrough(req, res, target) {
-  countSkipped(target.host)
+function passThrough(req, res, target, isCounted = true) {
+  if (isCounted) countSkipped(target.host)
   const client = clientOf(req.socket)
   const isLocal = isLocalClient(client)
   if (!isLocal && isLoopback(target.host)) {
@@ -466,6 +471,8 @@ function handleRequest(req, res, tunnelTarget) {
   if (!target) return serveSelf(res, req.url ?? '/')
   if (isSelf(target.host, target.port)) return serveSelf(res, target.path)
   if (!tracks(target.host)) return passThrough(req, res, target)
+  // Claude's own services are never recorded
+  if (isClaudeHost(target.host)) return passThrough(req, res, target, false)
   exchange(req, res, target).catch(error => {
     emit({ t: 'log', level: 'error', message: `exchange: ${error.stack ?? error.message}` })
     if (!res.headersSent) {
@@ -976,12 +983,26 @@ async function decrypt(rawSocket, host, port) {
   })
 }
 
-function handleConnect(req, clientSocket, head) {
+function isClaudeHost(host) {
+  return CLAUDE_HOSTS.some(pattern => matchesHost(host, pattern))
+}
+
+let selfGuard = null
+
+async function handleConnect(req, clientSocket, head) {
+  // held until we know what to do with it: the client's first bytes wait in the buffer
+  clientSocket.pause()
   const { host, port } = parseAuthority(req.url ?? '')
   clientSocket.on('error', () => {})
   clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
   if (head?.length) clientSocket.unshift(head)
   if (!tracks(host)) return quietTunnel(clientSocket, host, port)
+  // Claude Code trusts no CA of ours: never decrypt Claude's services, nor
+  // anything Claude started while the system proxy sends it here
+  if (isClaudeHost(host)) return quietTunnel(clientSocket, host, port, false)
+  if (selfGuard && (await selfGuard.isFromClaude(clientSocket).catch(() => false))) {
+    return quietTunnel(clientSocket, host, port, false)
+  }
   if (noDecrypt.some(pattern => matchesHost(host, pattern))) {
     return tunnel(clientSocket, host, port, 'no-decrypt')
   }
@@ -992,6 +1013,7 @@ function handleConnect(req, clientSocket, head) {
     if (first[0] === 0x16) decrypt(clientSocket, host, port)
     else tunnel(clientSocket, host, port, 'not-tls')
   })
+  clientSocket.resume()
 }
 
 // --- start ----------------------------------------------------------------
@@ -1037,7 +1059,12 @@ async function main() {
 
   const server = http.createServer()
   server.on('request', (req, res) => handleRequest(req, res, null))
-  server.on('connect', handleConnect)
+  server.on('connect', (req, socket, head) =>
+    handleConnect(req, socket, head).catch(error => {
+      emit({ t: 'log', level: 'error', message: `connect: ${error.message}` })
+      socket.destroy()
+    }),
+  )
   server.on('upgrade', (req, socket, head) => handleUpgrade(req, socket, head, null))
   server.on('clientError', (error, socket) => socket.destroy())
   server.on('error', error =>
@@ -1054,6 +1081,9 @@ async function main() {
 
   server.listen(Number(args.port), args.host, () => {
     listenPort = server.address().port
+    selfGuard = createSelfGuard({ port: () => listenPort, addresses: lanAddresses, emit, isAssumed: args['assume-system-proxy'] })
+    // the mod writes the backup as it turns the system proxy on or off: look again at once
+    if (args['system-proxy-backup']) watchFile(args['system-proxy-backup'], { interval: 300 }, () => selfGuard.recheck())
     emit({
       t: 'ready',
       host: args.host,
@@ -1077,8 +1107,23 @@ async function main() {
   process.on('SIGINT', stop)
   // Claude Code gone without a word: the parent is now launchd.
   setInterval(() => {
-    if (process.ppid === 1) process.exit(0)
+    if (process.ppid !== 1) return
+    restoreSystemProxy()
+    process.exit(0)
   }, 2000).unref()
+}
+
+// The mod turned the system proxy on and Claude Code is gone: put the Mac's
+// network settings back, or every app would point at a proxy that is gone.
+function restoreSystemProxy() {
+  const file = args['system-proxy-backup']
+  if (!file) return
+  try {
+    const text = readFileSync(file, 'utf8')
+    if (!text.trim()) return
+    for (const argv of restoreCommands(JSON.parse(text))) execFileSync(argv[0], argv.slice(1), { timeout: 5000, stdio: 'ignore' })
+    writeFileSync(file, '')
+  } catch {}
 }
 
 process.on('uncaughtException', error => {

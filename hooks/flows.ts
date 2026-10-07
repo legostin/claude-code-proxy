@@ -19,6 +19,7 @@ export type SidecarEvent =
   | { t: 'rules'; file: string; total: number; active: number; errors: string[]; untrusted: string[] }
   | { t: 'tracking'; enabled: boolean; patterns: string[] }
   | { t: 'skipped'; hosts: Record<string, number> }
+  | { t: 'system-proxy'; isOn: boolean }
   | { t: 'fatal'; code: string; message: string }
   | { t: 'log'; level: string; message: string }
 

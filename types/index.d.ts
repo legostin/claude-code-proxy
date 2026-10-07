@@ -78,6 +78,22 @@ export type ProxyTracking = {
   patterns: string[]
 }
 
+export type ProxySimulator = { udid: string; name: string; runtime: string; state: string }
+
+export type ProxyAndroidDevice = { serial: string; avd: string | null; isEmulator: boolean }
+
+/** What the setup tabs found on this Mac, when they last looked. */
+export type ProxyDevices = {
+  simulators: ProxySimulator[]
+  simulatorError: string | null
+  avds: string[]
+  android: ProxyAndroidDevice[]
+  androidError: string | null
+}
+
+/** The macOS system proxy: whether it points here (scutil), on which service, and whether we set it. */
+export type ProxySystemProxy = { isOn: boolean; service: string | null; isOurs: boolean }
+
 export type ProxySetupTab = 'browser' | 'ios' | 'android' | 'cli'
 
 export type ProxyView = {
@@ -103,6 +119,14 @@ declare module 'claude-code' {
       tracking: ProxyTracking
       /** Hosts that passed through untracked, and how often, since the proxy started. */
       skipped: Record<string, number>
+      devices: ProxyDevices
+      systemProxy: ProxySystemProxy
+      /** Simulators this session put the CA into. */
+      caSimulators: string[]
+      /** A long action under way (booting a simulator), shown until it ends. */
+      busy: string
+      /** Whether this Mac's keychain trusts the proxy CA, as last checked. */
+      macTrust: 'unknown' | 'trusted' | 'untrusted'
     }
   }
 }

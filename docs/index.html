@@ -166,6 +166,7 @@
     <li>A setup page served by the proxy at <code>http://claude.proxy/</code> with an iOS <code>.mobileconfig</code>, an Android <code>.crt</code> and a <code>.pem</code>.</li>
     <li>Safe on the network: in <code>lan</code> mode phones can use it, but nothing on the network can reach this Mac's localhost through it.</li>
     <li>Tracked domains per session: decrypt and record only your app's hosts, wildcards included; everything else passes through untouched, so a phone's own services keep working.</li>
+    <li>One-press setup: pick an iOS simulator and it boots with the CA and the system proxy on; pick an Android emulator and it starts behind the proxy; Claude Code itself keeps working.</li>
     <li>A rules engine: delays, throttling, mocked answers, rewritten headers, URLs and JSON bodies, status codes, dropped connections and scripts, chained by priority.</li>
     <li>No dependencies: a Node.js sidecar and <code>openssl</code>.</li>
   </ul>
@@ -188,9 +189,9 @@
   <table>
     <tr><th>Client</th><th>How</th></tr>
     <tr><td>A separate browser</td><td><strong>Setup → Browser → Open Google Chrome</strong> (or Edge, Brave, Chromium): its own profile, <code>--proxy-server</code>, localhost captured, and trust by SPKI hash instead of a keychain entry.</td></tr>
-    <tr><td>iOS Simulator</td><td><strong>CA → simulators</strong> adds the CA to every booted simulator; the tab copies the <code>networksetup</code> commands for the macOS system proxy the simulator uses.</td></tr>
+    <tr><td>iOS Simulator</td><td>Pick one and press <strong>Use</strong>: it boots, gets the CA, and the macOS system proxy points at the proxy, with Claude Code's own traffic left alone.</td></tr>
     <tr><td>iPhone / iPad</td><td><strong>Listen on LAN</strong>, scan the QR code to install the profile, trust it, set the Wi-Fi proxy to the address the tab shows.</td></tr>
-    <tr><td>Android emulator / USB phone</td><td><strong>Android → proxy</strong>: <code>10.0.2.2:8899</code> for an emulator, <code>adb reverse</code> for USB; reverted when the proxy stops.</td></tr>
+    <tr><td>Android emulator / USB phone</td><td><strong>Start through the proxy</strong> launches an AVD with <code>-http-proxy</code>; <strong>Android → proxy</strong> points a running emulator or a USB phone, and is reverted when the proxy stops.</td></tr>
     <tr><td>Android phone on Wi-Fi</td><td><strong>Listen on LAN</strong>, scan the QR code to get the certificate, set the Wi-Fi proxy; apps need a <code>network_security_config</code>, which the tab copies.</td></tr>
     <tr><td>curl, Node, Python, Go</td><td><code>HTTPS_PROXY</code>, <code>NODE_EXTRA_CA_CERTS</code>, <code>SSL_CERT_FILE</code>, <code>REQUESTS_CA_BUNDLE</code>, copied from the macOS / CLI tab.</td></tr>
   </table>
@@ -221,7 +222,7 @@
   <ul class="limits">
     <li>Clients are offered HTTP/1.1 only, so gRPC over HTTP/2 does not get through.</li>
     <li>WebSocket frames are not decoded; an upgrade shows as one row.</li>
-    <li>The macOS system proxy is not switched automatically, so a crashed session cannot leave the Mac without a network.</li>
+    <li>The system proxy is put back on stop, at the session's end and when Claude Code quits; only a <code>kill -9</code> of the proxy can leave it on.</li>
     <li>Mods are an early-access Claude Code API.</li>
   </ul>
 

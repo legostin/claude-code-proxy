@@ -30,9 +30,11 @@ work:
 - **No separate app.** The proxy, its certificate authority and the request list live in Claude Code.
 - **One click for a browser.** It opens a separate Chrome, Edge, Brave or Chromium window whose
   whole traffic goes through the proxy, localhost included, with **no certificate to install**.
-- **Simulators and emulators set up for you.** The CA goes into every booted iOS Simulator with one
-  button. The Android emulator, or a phone on USB, is pointed at the proxy with another, and pointed
-  back when you stop.
+- **Simulators and emulators set up for you.** Pick a simulator from the list and press **Use**: it
+  boots, gets the CA, and the Mac's system proxy points at the proxy. Pick an Android emulator and
+  it starts with its traffic already going through the proxy.
+- **Claude Code keeps working.** With the macOS system proxy on, every app on the Mac goes through
+  the proxy; Claude's hosts bypass it and anything Claude runs is tunnelled, never decrypted.
 - **Claude sees the traffic.** Two tools give the model the request list and any request in full:
   headers and decoded bodies.
 
@@ -88,11 +90,27 @@ Answer `y` to add the marketplace and pick a scope. Then:
 | Client | How |
 | --- | --- |
 | A separate browser | **Setup → Browser → Open Google Chrome** (or Edge, Brave, Chromium). It starts a new instance with a profile of its own, `--proxy-server`, `--proxy-bypass-list=<-loopback>` so localhost is captured too, and `--ignore-certificate-errors-spki-list` so it trusts the proxy's certificates without touching the keychain. |
-| iOS Simulator | **Setup → iOS → CA → simulators** runs `xcrun simctl keychain add-root-cert` on every booted simulator. The simulator uses the macOS system proxy; the tab copies the `networksetup` commands to turn it on and off. |
+| iOS Simulator | **Setup → iOS**: the simulators on this Mac, booted first. **Use** (or **Boot & use**) boots one, adds the CA (`simctl keychain add-root-cert`) and turns the macOS system proxy on, since a simulator has no proxy setting of its own. |
 | iPhone / iPad | **Setup → iOS → Listen on LAN**, scan the QR code with the Camera to install the profile, turn it on under **Certificate Trust Settings**, then set the Wi-Fi proxy to the server and port the tab shows. |
-| Android emulator / phone on USB | **Setup → Android → Android → proxy** points an emulator at `10.0.2.2:8899`, and a USB device at `127.0.0.1:8899` over `adb reverse`. **Revert**, stopping the proxy or ending the session points them back. |
+| Android emulator | **Setup → Android**: your AVDs. **Start through the proxy** launches one with `-http-proxy`; **Open CA page** gets it the certificate. A running emulator or a USB phone is pointed at the proxy with **Android → proxy** (`10.0.2.2`, or `adb reverse`) and back with **Revert**. |
 | Android phone on Wi-Fi | **Setup → Android → Listen on LAN**, scan the QR code to download the certificate and install it, then set the Wi-Fi proxy to the hostname and port the tab shows. Apps trust user CAs only with a `network_security_config`; **config snippet** copies one. |
+| Safari and native Mac apps | **Setup → macOS → Turn on for this Mac** points the system proxy here (Claude's hosts on its bypass list), **Trust CA on this Mac** adds the CA to the login keychain. Both are put back when the proxy stops. |
 | curl, Node, Python, Go | `curl -x http://127.0.0.1:8899 --cacert ~/.claude/proxy-mod/ca/ca.pem …`; **Setup → macOS / CLI** copies `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE`. |
+
+## Claude Code keeps working
+
+Claude Code does not trust the proxy's CA, so a connection of its own that the proxy decrypted
+would fail; with the macOS system proxy on, its traffic would come here like every app's. Two
+guards keep it whole:
+
+- Anthropic's and Claude's hosts (`*.anthropic.com`, `*.claude.ai`, `*.claude.com`) are on the
+  system proxy's bypass list, and the proxy never decrypts them anyway.
+- While the system proxy points at the proxy, a local connection whose process descends from
+  Claude (any Claude Code session, the commands and MCP servers it runs, the Claude app) is
+  tunnelled untouched. Every other app is decrypted as usual.
+
+The system proxy switch keeps the settings it replaced and puts them back when the proxy stops,
+when the session ends, and, from the proxy itself, if Claude Code quits.
 
 ## Tracked domains
 
@@ -260,8 +278,8 @@ No. It captures clients you point at it.
 
 - Clients are offered HTTP/1.1 only, so gRPC over HTTP/2 does not get through.
 - WebSocket frames are not decoded; an upgrade shows as one row.
-- The macOS system proxy is not switched automatically: if the session died with it on, the Mac
-  would lose its network until it is turned off.
+- The system proxy is put back on stop, at the session's end and when Claude Code quits; only a
+  proxy killed with `kill -9` can leave it on (System Settings → Network → Details → Proxies).
 - Rule scripts run in Node's `vm` module inside the proxy: approve only code you would run yourself.
 - Mods are an early-access Claude Code API.
 

@@ -196,11 +196,12 @@ export function iosGuide(facts: SetupFacts): string {
 When you are done, set **Configure Proxy → Off** again, or the iPhone loses its network once the proxy stops.`
   return `### iOS Simulator
 
-1. **"CA → simulators"** below adds the root certificate to every **booted** simulator
-   (\`xcrun simctl keychain <udid> add-root-cert\`). Once per simulator is enough.
-2. The simulator has no proxy settings of its own: it uses the **macOS system proxy**. Turn it on with
-   "system proxy on" and turn it off ("off") when you are done. All of this Mac's traffic goes through
-   the proxy meanwhile, so keep it on only while you debug.
+**Use** next to a simulator does it all: boots it, adds the proxy's root certificate
+(\`xcrun simctl keychain <udid> add-root-cert\`) and turns the **macOS system proxy** on, since the
+simulator has no proxy setting of its own. Every app on this Mac then goes through the proxy, Claude
+Code excepted: its hosts bypass it and its own connections are tunnelled, never decrypted. The system
+proxy is put back when the proxy stops, when the session ends, or if Claude Code quits.
+Turn on the tracking list (**Domains**, \`d\`) to record only your app's hosts.
 
 ### iPhone / iPad
 
