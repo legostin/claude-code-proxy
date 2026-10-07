@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 import { after, before, describe, test } from 'node:test'
 import { gzipSync } from 'node:zlib'
 
-import { createLeafFactory, ensureCA } from './certs.mjs'
+import { caCommonName, createLeafFactory, ensureCA } from './certs.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -115,6 +115,14 @@ describe('sidecar', () => {
     sidecar?.child.kill()
     for (const server of servers) server.close()
     await rm(dataDir, { recursive: true, force: true })
+  })
+
+  test('keeps the CA name within the 64 characters X.509 allows', () => {
+    const long = caCommonName('Mac-1759823044-runner-with-a-very-long-machine-name.local.example')
+    assert.ok(long.length <= 64, long)
+    assert.match(long, /^Claude Code Proxy CA \(Mac-1759823044-runner-with-a-ver[\w-]*\)$/)
+    assert.equal(caCommonName('MacBook-Pro.local'), 'Claude Code Proxy CA (MacBook-Pro)')
+    assert.equal(caCommonName(''), 'Claude Code Proxy CA (local)')
   })
 
   test('reports where it listens and its CA', () => {

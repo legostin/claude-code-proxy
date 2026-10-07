@@ -49,6 +49,13 @@ export function safeHost(host) {
   return lower.replace(/\.$/, '')
 }
 
+// X.509 holds a common name to 64 characters; a machine's name can be longer.
+export function caCommonName(machine) {
+  const short = String(machine).split('.')[0].replace(/[^\w-]/g, '') || 'local'
+  const prefix = 'Claude Code Proxy CA ('
+  return `${prefix}${short.slice(0, 64 - prefix.length - 1)})`
+}
+
 export async function ensureCA(dataDir) {
   const caDir = join(dataDir, 'ca')
   const caKeyPath = join(caDir, 'ca.key')
@@ -57,7 +64,7 @@ export async function ensureCA(dataDir) {
   await mkdir(caDir, { recursive: true, mode: 0o700 })
 
   if (!existsSync(caKeyPath) || !existsSync(caCertPath)) {
-    const name = `Claude Code Proxy CA (${hostname().replace(/[^\w.-]/g, '') || 'local'})`
+    const name = caCommonName(hostname())
     const config = join(caDir, 'ca.cnf')
     await writeFile(
       config,
