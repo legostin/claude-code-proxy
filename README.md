@@ -28,6 +28,8 @@ device, and copying requests into the chat by hand. **proxy** keeps all of it wh
 work:
 
 - **No separate app.** The proxy, its certificate authority and the request list live in Claude Code.
+- **A quick start where you land.** An empty list offers the ways in found on this Mac: open a
+  browser, use a simulator, start an emulator, set up a phone, track only your app.
 - **One click for a browser.** It opens a separate Chrome, Edge, Brave or Chromium window whose
   whole traffic goes through the proxy, localhost included, with **no certificate to install**.
 - **Simulators and emulators set up for you.** Pick a simulator from the list and press **Use**: it
@@ -91,9 +93,10 @@ Answer `y` to add the marketplace and pick a scope. Then:
 | --- | --- |
 | A separate browser | **Setup → Browser → Open Google Chrome** (or Edge, Brave, Chromium). It starts a new instance with a profile of its own, `--proxy-server`, `--proxy-bypass-list=<-loopback>` so localhost is captured too, and `--ignore-certificate-errors-spki-list` so it trusts the proxy's certificates without touching the keychain. |
 | iOS Simulator | **Setup → iOS**: the simulators on this Mac, booted first. **Use** (or **Boot & use**) boots one, adds the CA (`simctl keychain add-root-cert`) and turns the macOS system proxy on, since a simulator has no proxy setting of its own. |
-| iPhone / iPad | **Setup → iOS → Listen on LAN**, scan the QR code with the Camera to install the profile, turn it on under **Certificate Trust Settings**, then set the Wi-Fi proxy to the server and port the tab shows. |
-| Android emulator | **Setup → Android**: your AVDs. **Start through the proxy** launches one with `-http-proxy`; **Open CA page** gets it the certificate. A running emulator or a USB phone is pointed at the proxy with **Android → proxy** (`10.0.2.2`, or `adb reverse`) and back with **Revert**. |
-| Android phone on Wi-Fi | **Setup → Android → Listen on LAN**, scan the QR code to download the certificate and install it, then set the Wi-Fi proxy to the hostname and port the tab shows. Apps trust user CAs only with a `network_security_config`; **config snippet** copies one. |
+| iPhone / iPad | **Setup → iOS → iPhone / iPad**: **Listen on LAN**, scan the QR code with the Camera to install the profile, turn it on under **Certificate Trust Settings**, then set the Wi-Fi proxy to the server and port shown. The section confirms when the phone's traffic arrives, and says so when the phone refuses the certificate. |
+| Android emulator | **Setup → Android → Emulator**: your AVDs. **Start through the proxy** launches one with `-http-proxy`, waits for it to boot and opens the CA page in its browser: one tap installs the certificate. A running emulator is pointed at the proxy with **Android → proxy** (`10.0.2.2`) and back with **Revert**. |
+| Android phone on USB | **Setup → Android → Phone**: **Point USB phones at the proxy** uses `adb reverse`, so no Wi-Fi is needed. |
+| Android phone on Wi-Fi | **Setup → Android → Phone**: **Listen on LAN**, scan the QR code to download the certificate and install it, then set the Wi-Fi proxy to the hostname and port shown. Apps trust user CAs only with a `network_security_config`; **config snippet** copies one. |
 | Safari and native Mac apps | **Setup → macOS → Turn on for this Mac** points the system proxy here (Claude's hosts on its bypass list), **Trust CA on this Mac** adds the CA to the login keychain. Both are put back when the proxy stops. |
 | curl, Node, Python, Go | `curl -x http://127.0.0.1:8899 --cacert ~/.claude/proxy-mod/ca/ca.pem …`; **Setup → macOS / CLI** copies `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE`. |
 

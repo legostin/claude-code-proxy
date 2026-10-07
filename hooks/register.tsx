@@ -113,6 +113,8 @@ const devicesAtom = atom({ plugin: 'proxy', key: 'devices' } as const, {
 const systemProxyAtom = atom({ plugin: 'proxy', key: 'systemProxy' } as const, { isOn: false, service: null, isOurs: false } as ProxySystemProxy)
 const caSimulatorsAtom = atom({ plugin: 'proxy', key: 'caSimulators' } as const, [] as string[])
 const busyAtom = atom({ plugin: 'proxy', key: 'busy' } as const, '')
+/** This mod's version, from its plugin.json: which copy the session runs. */
+const versionAtom = atom({ plugin: 'proxy', key: 'version' } as const, '')
 const macTrustAtom = atom({ plugin: 'proxy', key: 'macTrust' } as const, 'unknown' as 'unknown' | 'trusted' | 'untrusted')
 /** The project's rules file as last read. */
 const rulesAtom = atom({ plugin: 'proxy', key: 'rules' } as const, { file: null, entries: [], fileErrors: [] } as ProxyRules)
@@ -859,7 +861,31 @@ async function startAvd($: EngineInterface, avd: string, options: Options): Prom
   const quote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`
   // the emulator outlives this call: started in the background, its traffic sent to the proxy from boot
   await $.process.run(['/bin/sh', '-c', `nohup ${quote(emulator)} -avd ${quote(avd)} -http-proxy http://127.0.0.1:${port} >/dev/null 2>&1 &`])
-  await say($, `${avd} is starting with its traffic going through the proxy. When it is up, "Open CA page" installs the certificate.`)
+  await say($, `${avd} is starting with its traffic going through the proxy from boot.`)
+  // once it is up, its browser opens the CA page: one tap installs the certificate
+  const tool = await adb($)
+  if (!tool) return
+  try {
+    await update($, busyAtom, () => `Waiting for ${avd} to boot…`)
+    const adbq = quote(tool)
+    const found = await $.process.run(
+      [
+        '/bin/sh',
+        '-c',
+        `for i in $(seq 1 90); do for s in $(${adbq} devices | awk '/^emulator-/{print $1}'); do ` +
+          `n=$(${adbq} -s "$s" emu avd name 2>/dev/null | head -1 | tr -d '\\r'); [ "$n" = ${quote(avd)} ] && echo "$s" && exit 0; done; sleep 2; done; exit 1`,
+      ],
+      { timeoutMs: 200_000 },
+    )
+    const serial = found.stdout.trim()
+    if (found.exitCode !== 0 || !serial) return say($, `${avd} did not come up in time; when it does, press Open CA page.`)
+    await $.process.run([tool, '-s', serial, 'shell', 'while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 1; done'], { timeoutMs: 240_000 })
+    await $.process.run([tool, '-s', serial, 'shell', 'am', 'start', '-a', 'android.intent.action.VIEW', '-d', 'http://claude.proxy/'])
+    await scanAndroid($)
+    await say($, `${avd} is up behind the proxy, and its browser shows the CA page: download the certificate, then install it in Settings → Security → Encryption & credentials.`)
+  } finally {
+    await update($, busyAtom, () => '')
+  }
 }
 
 // --- tracked domains ------------------------------------------------------------------
@@ -1010,6 +1036,57 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
   const tracking = await read($, trackingAtom)
   const rules = await read($, rulesAtom)
   const rulesOn = rules.entries.filter(entry => entry.enabled && entry.errors.length === 0 && !entry.isUntrusted).length
+  // nothing captured yet: the one-press ways in, from what is on this Mac
+  let quickStart: RenderElement | null = null
+  if (flows.length === 0) {
+    const browsers = await findBrowsers($)
+    const devices = await read($, devicesAtom)
+    const version = await read($, versionAtom)
+    const simulator = devices.simulators[0]
+    const avd = devices.avds.find(name => !devices.android.some(device => device.avd === name)) ?? devices.avds[0]
+    const row = (label: string, action: RenderElement | null, hint: string) => (
+      <Box key={`qs-row-${label}`} flexDirection="row" gap={1} flexWrap="wrap">
+        <Text>{label.padEnd(13)}</Text>
+        {action}
+        <Text dimColor>{hint}</Text>
+      </Box>
+    )
+    quickStart = (
+      <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1} marginTop={1}>
+        <Text bold>
+          {isRunning ? 'Waiting for requests. Point a client here:' : 'Quick start'}
+          {version ? `  · proxy ${version}` : ''}
+        </Text>
+        {!isRunning
+          ? row('Proxy', <Button key="qs-start" variant="primary" label="Start" onPress={() => void startProxy($, options)} />, 'runs it on this Mac')
+          : null}
+        {row(
+          'Browser',
+          browsers[0] ? (
+            <Button key="qs-browser" label={`Open ${browsers[0].browser.name}`} onPress={() => void launchBrowser($, options, browsers[0]!.browser.slug)} />
+          ) : null,
+          browsers[0] ? 'a separate window: all of its traffic lands here, localhost too' : 'no Chrome, Edge, Brave or Chromium in /Applications',
+        )}
+        {simulator
+          ? row(
+              'iOS Simulator',
+              <Button key="qs-simulator" label={`Use ${simulator.name}`} onPress={() => void useSimulator($, simulator.udid, options)} />,
+              'boots it, adds the CA, turns the system proxy on',
+            )
+          : null}
+        {avd
+          ? row('Android', <Button key="qs-avd" label={`Start ${avd}`} onPress={() => void startAvd($, avd, options)} />, 'starts the emulator behind the proxy')
+          : null}
+        {row('Phone', <Button key="qs-phone" label="Set up a phone" onPress={() => void openSetupTab($, 'ios', 'real')} />, 'the exact address and a QR code to scan')}
+        {row(
+          'Only your app',
+          <Button key="qs-domains" label="Track domains" onPress={() => void update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'domains' }))} />,
+          'decrypt and record only its hosts; everything else passes through',
+        )}
+      </Box>
+    )
+  }
+
   const flowCells = (flow: ProxyFlow, label: string, labelWidth: number) => [
     <Text color={statusColor(flow)}>{statusLabel(flow).padEnd(4)} </Text>,
     <Text bold>{flow.method.slice(0, 7).padEnd(7)} </Text>,
@@ -1094,15 +1171,8 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
         />
       ) : null}
       {parsed.errors.length ? <Text color="warning">Not understood: {parsed.errors.join(', ')}</Text> : null}
-      {shown.length === 0 ? (
-        <Text dimColor>
-          {flows.length > 0
-            ? 'Nothing matches the filter.'
-            : isRunning
-              ? 'Waiting for requests. Setup (n) shows how to point a browser, a simulator or a phone here.'
-              : 'The proxy is stopped. Start (s) runs it; Setup (n) shows how to connect clients.'}
-        </Text>
-      ) : null}
+      {shown.length === 0 && flows.length > 0 ? <Text dimColor>Nothing matches the filter.</Text> : null}
+      {quickStart}
       {isTree
         ? treeRows.slice(0, MAX_ROWS).map(row => {
             const indent = '  '.repeat(row.depth)
@@ -1287,11 +1357,18 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
 
   let actions: RenderElement[] = []
   let deviceBlock: RenderElement | null = null
+  let usbBlock: RenderElement | null = null
   let guide = ''
   const devices = await read($, devicesAtom)
   const caSimulators = await read($, caSimulatorsAtom)
   const systemProxy = await read($, systemProxyAtom)
   const busy = await read($, busyAtom)
+  const version = await read($, versionAtom)
+  const hasDevices = tab === 'ios' || tab === 'android'
+  const device = (await read($, viewAtom)).device ?? 'virtual'
+  const showVirtual = !hasDevices || device === 'virtual'
+  const showReal = hasDevices && device === 'real'
+  const flows = await read($, flowsAtom)
   const systemProxyBlock = (
     <Box flexDirection="column" marginTop={1}>
       <Box flexDirection="row" gap={1} flexWrap="wrap">
@@ -1393,13 +1470,23 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
             </Box>
           )
         })}
-        {usb.length ? <Text bold>USB devices</Text> : null}
+      </Box>
+    )
+    usbBlock = (
+      <Box flexDirection="column" marginTop={1}>
+        <Box flexDirection="row" gap={1} flexWrap="wrap">
+          <Text bold>On USB</Text>
+          <Button key="usb-on" variant="primary" label="Point USB phones at the proxy" onPress={run(() => pointAndroid($))} />
+          <Button plain dimColor key="usb-off" label="revert" onPress={run(() => revertAndroid($))} />
+        </Box>
+        {usb.length === 0 ? <Text dimColor>No phone on USB (adb devices lists none); with USB debugging on, it shows here.</Text> : null}
         {usb.map(device => (
           <Box key={`usb-${device.serial}`} flexDirection="row" gap={1}>
             <Text>{device.serial}</Text>
-            {pointed.includes(device.serial) ? <Text color="success">through the proxy</Text> : null}
+            {pointed.includes(device.serial) ? <Text color="success">through the proxy (adb reverse)</Text> : null}
           </Box>
         ))}
+        <Text dimColor>No Wi-Fi needed: adb reverse carries its traffic to this Mac.</Text>
       </Box>
     )
     actions = [
@@ -1436,13 +1523,26 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
   const kindName = (kind: string) => (kind === 'vpn' ? 'VPN' : kind === 'virtual' ? 'virtual machines' : 'another network')
   const setListen = (value: 'lan' | 'local') => async () => {
     // the engine reloads the mod with the new option; the proxy restarts on it
-    const result = await $.config.set({ key: 'proxy.listen', value })
+    // the row's key as /config names it for this install ("proxy.listen", or a marketplace's spelling)
+    const rows = await $.config.list().catch(() => [])
+    const key = rows.find(row => /(^|[.:@])listen$/.test(row.key) && JSON.stringify(row.provider ?? '').includes('proxy'))?.key ?? 'proxy.listen'
+    const result = await $.config.set({ key, value })
     await say($, 'deny' in result && result.deny ? `Could not change Listen on: ${result.deny}` : value === 'lan' ? 'Listening on the network now.' : 'Listening on this Mac only now.')
   }
 
+  // clients on the network: what each sent, and how often it refused our certificate
+  const phoneClients = [...flows.reduce((byAddress, flow) => {
+    if (!flow.client || flow.client === '127.0.0.1' || flow.client === '::1') return byAddress
+    const entry = byAddress.get(flow.client) ?? { address: flow.client, count: 0, rejected: 0 }
+    entry.count++
+    if (flow.errorCode === 'client-rejected-cert') entry.rejected++
+    byAddress.set(flow.client, entry)
+    return byAddress
+  }, new Map<string, { address: string; count: number; rejected: number }>()).values()]
+
   // a phone scans this before any proxy setting: a plain request to the port
   // answers with the setup page
-  const qrUrl = remote && phone && !isLocalOnly ? `http://${phone.address}:${facts.status.port}/` : null
+  const qrUrl = remote && phone ? `http://${phone.address}:${facts.status.port}/` : null
   let qrBlock: RenderElement | null = null
   if (qrUrl) {
     const code = encodeQr(qrUrl)
@@ -1466,7 +1566,11 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
               ? 'It opens the setup page: tap "iOS: download profile", then follow the steps below.'
               : 'It opens the setup page: tap "Android: download certificate", then follow the steps below.'}
           </Text>
-          <Text dimColor>The phone only has to be on the same network; no proxy setting is needed for this page.</Text>
+          {isLocalOnly ? (
+            <Text color="warning">Turn on Listen on LAN first: until then the phone cannot open it.</Text>
+          ) : (
+            <Text dimColor>The phone only has to be on the same network; no proxy setting is needed for this page.</Text>
+          )}
         </Box>
       </Box>
     )
@@ -1500,9 +1604,29 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
       {notice ? <Text color="success">{notice}</Text> : null}
       {busy ? <Text color="claude">◌ {busy}</Text> : null}
 
+      {hasDevices ? (
+        <Box flexDirection="row" gap={1} marginTop={1}>
+          <Button
+            key="sub-virtual"
+            hotkey="v"
+            variant={device === 'virtual' ? 'primary' : undefined}
+            label={tab === 'ios' ? 'Simulator' : 'Emulator'}
+            onPress={() => void update($, viewAtom, (v): ProxyView => ({ ...v, device: 'virtual' }))}
+          />
+          <Button
+            key="sub-real"
+            hotkey="p"
+            variant={device === 'real' ? 'primary' : undefined}
+            label={tab === 'ios' ? 'iPhone / iPad' : 'Phone (USB / Wi-Fi)'}
+            onPress={() => void update($, viewAtom, (v): ProxyView => ({ ...v, device: 'real' }))}
+          />
+        </Box>
+      ) : null}
+
+      {showVirtual ? (
       <Box flexDirection="column" marginTop={1}>
         <Text bold underline>
-          {tab === 'browser' ? 'Separate browser' : tab === 'ios' ? 'Simulator' : tab === 'android' ? 'Emulator and USB devices' : 'This Mac'}
+          {tab === 'browser' ? 'Separate browser' : tab === 'ios' ? 'Simulator' : tab === 'android' ? 'Emulator' : 'This Mac'}
         </Text>
         {tab === 'ios' ? systemProxyBlock : null}
         {deviceBlock}
@@ -1524,8 +1648,10 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
           </Box>
         ) : null}
       </Box>
+      ) : null}
 
-      {remote ? (
+      {showReal ? usbBlock : null}
+      {showReal && remote ? (
         <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1} marginTop={1}>
           <Text bold>{tab === 'ios' ? 'iPhone / iPad' : 'Android phone over Wi-Fi'}</Text>
           {phone ? (
@@ -1554,6 +1680,14 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
               {others.length ? `; not ${others.map(entry => `${entry.address} (${kindName(entry.kind)})`).join(', ')}` : ''}.
             </Text>
           ) : null}
+          {phoneClients.map(client => (
+            <Text key={`client-${client.address}`} color={client.rejected ? 'error' : 'success'}>
+              {client.rejected
+                ? `✕ ${client.address} refused the proxy certificate ${client.rejected}× : install the ${tab === 'ios' ? 'profile and turn on its trust' : 'certificate'} (steps below), or the app pins its certificates.`
+                : `✓ Traffic is arriving from ${client.address}: ${client.count} ${client.count === 1 ? 'request' : 'requests'}.`}
+            </Text>
+          ))}
+          {phone && !isLocalOnly && phoneClients.length === 0 ? <Text dimColor>Nothing from a phone yet: once its Wi-Fi proxy is set, its requests show here.</Text> : null}
           {isLocalOnly ? (
             <Box flexDirection="row" gap={1} flexWrap="wrap">
               <Text color="warning">Listen on is local: a phone cannot reach the proxy yet.</Text>
@@ -1569,7 +1703,7 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
       <Box flexDirection="column" marginTop={1}>
         {status.ca ? (
           <Text dimColor>
-            CA {status.ca.path} · SHA-256 {status.ca.fingerprint256}
+            {version ? `proxy ${version} · ` : ''}CA {status.ca.path} · SHA-256 {status.ca.fingerprint256}
           </Text>
         ) : (
           <Text dimColor>The certificate is made the first time the proxy starts.</Text>
@@ -1664,9 +1798,9 @@ async function drawDomains($: EngineInterface, e: PaneEvent): Promise<RenderElem
   )
 }
 
-async function openSetupTab($: EngineInterface, tab: ProxySetupTab): Promise<void> {
+async function openSetupTab($: EngineInterface, tab: ProxySetupTab, device?: 'virtual' | 'real'): Promise<void> {
   await update($, noticeAtom, () => '')
-  await update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'setup', setupTab: tab }))
+  await update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'setup', setupTab: tab, device: device ?? v?.device }))
   // what is on this Mac now: the lists draw from the last look
   if (tab === 'ios') await scanSimulators($).catch(() => undefined)
   if (tab === 'android') await scanAndroid($).catch(() => undefined)
@@ -1852,9 +1986,10 @@ function optionsOf(raw: Record<string, unknown>): Options {
 }
 
 async function statusText($: EngineInterface): Promise<string> {
+  const version = await read($, versionAtom)
   const tracking = await read($, trackingAtom)
   const scope = tracking.enabled && tracking.patterns.length ? ` Only ${tracking.patterns.join(', ')} are decrypted and recorded (track_domains).` : ''
-  return `${await phaseText($)}${scope}`
+  return `${await phaseText($)}${scope}${version ? ` (proxy mod ${version})` : ''}`
 }
 
 async function phaseText($: EngineInterface): Promise<string> {
@@ -1982,6 +2117,10 @@ export const register: Register = (on, raw) => {
       },
     })
     await restoreTracking($).catch(() => undefined)
+    try {
+      const manifest = JSON.parse(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`)) as { version?: string }
+      await update($, versionAtom, () => manifest.version ?? '')
+    } catch {}
     await loadRules($).catch(() => undefined)
     const remembered = await $.store.get('layout').catch(() => undefined)
     if (remembered === 'tree' || remembered === 'list') {
@@ -2056,6 +2195,9 @@ export const register: Register = (on, raw) => {
       case '':
         await openPane($)
         await startProxy($, options)
+        // what the quick start offers: the simulators and emulators on this Mac
+        void scanSimulators($).catch(() => undefined)
+        void scanAndroid($).catch(() => undefined)
         return { text: 'The Proxy pane is open.' }
       default:
         return { text: `Unknown "${arg}". /proxy [start|stop|clear|setup|rules|track|untrack|status|tree|list]` }

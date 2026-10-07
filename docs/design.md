@@ -238,3 +238,24 @@ tail of its stderr in the pane, [Start] again), the upstream is unreachable
 - **Layout.** Each setup tab leads with its one-press path, then a framed
   section for a phone (the exact address, Listen on LAN, the QR code), then
   the CA and the guide.
+
+## 0.6.0: where you land
+
+- **Quick start.** An empty list is a framed set of one-press ways in, from
+  what this Mac has: Start, open the first Chromium browser, use the first
+  simulator, start the first AVD not running, set up a phone, track domains.
+  Opening the pane looks for simulators and emulators in the background.
+- **Sub-tabs.** iOS and Android split into the virtual device (simulator,
+  emulator) and the real one (iPhone, an Android phone on USB or Wi-Fi).
+- **The phone section** always shows the QR code once an address is known,
+  and says Listen on LAN comes first while the proxy listens locally. It
+  confirms traffic from each network client and counts the times a client
+  refused the certificate. Listen on LAN finds its `/config` row through
+  `$.config.list()` rather than assuming its key.
+- **Android emulators** started from the tab are found by AVD name once up,
+  waited for (`sys.boot_completed`) and shown the CA page in their browser.
+- **Version.** The pane, the setup footer and `/proxy status` name the mod's
+  version, so a session running an older copy is plain to see.
+- **Testing through the proxy from Claude.** While the system proxy points
+  here, Claude's own commands are tunnelled, curl included: a check of a
+  rule from Claude's shell uses a process outside Claude's tree.

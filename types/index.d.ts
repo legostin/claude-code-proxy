@@ -101,6 +101,8 @@ export type ProxyView = {
   selectedId: number | null
   setupTab: ProxySetupTab
   layout?: 'list' | 'tree'
+  /** On the iOS and Android tabs: the simulator/emulator, or a real phone. */
+  device?: 'virtual' | 'real'
 }
 
 declare module 'claude-code' {
@@ -127,6 +129,8 @@ declare module 'claude-code' {
       busy: string
       /** Whether this Mac's keychain trusts the proxy CA, as last checked. */
       macTrust: 'unknown' | 'trusted' | 'untrusted'
+      /** This mod's version, from its plugin.json. */
+      version: string
     }
   }
 }

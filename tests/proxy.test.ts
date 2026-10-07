@@ -77,7 +77,7 @@ const ROOT = '/work/app'
 const RULES_FILE = `${ROOT}/.claude/proxy-rules.json`
 const TRUST_FILE = `${HOME}/.claude/proxy-mod/trusted-scripts.json`
 
-function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string> = {}) {
+function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string> = {}, isQuiet = false) {
   // the disk, fresh for each test: reads see what writes left
   const files: Record<string, string> = { ...FILES, ...extraFiles }
   const spawned: (readonly string[])[] = []
@@ -87,7 +87,7 @@ function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string
   mock.store(on)
   on('process.spawn', async function* ($, e) {
     spawned.push(e.argv)
-    const sent = FLOWS.map(f => (ruledFlow && f.id === 2 ? { ...f, rules: ['mock-login'] } : f))
+    const sent = isQuiet ? [] : FLOWS.map(f => (ruledFlow && f.id === 2 ? { ...f, rules: ['mock-login'] } : f))
     const skipped = { t: 'skipped', hosts: { 'gateway.icloud.com': 12, 'api.kolesa.kz': 3 } }
     const text = [READY, ...sent.map(f => ({ t: 'flow', flow: f })), skipped].map(event => `${JSON.stringify(event)}\n`).join('')
     // cut mid-line, as a pipe may
@@ -112,6 +112,8 @@ function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string
     if (line.startsWith('networksetup -getwebproxy') || line.startsWith('networksetup -getsecurewebproxy')) return ok('Enabled: No\nServer: \nPort: 0\n')
     if (line.startsWith('networksetup -getproxybypassdomains')) return ok('*.local\n169.254/16\n')
     if (line === 'emulator -list-avds') return ok('Pixel_8_API_35\nPixel_6\n')
+    // the started emulator, found by its AVD name
+    if (line.startsWith('/bin/sh -c for i in')) return ok('emulator-5556\n')
     if (line.startsWith('security verify-cert')) {
       return ok(ran.some(command => command.startsWith('security add-trusted-cert')) ? '...certificate verification successful.\n' : 'Cert Verify Result: CSSMERR_TP_NOT_TRUSTED\n')
     }
@@ -254,16 +256,18 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await clock.advance(250)
     await ui.press({ key: 'setup' })
     await ui.press({ key: 'tab-ios' })
-
-    expect(await ui.find({ text: /Server 10\.7\.9\.5 {2}Port 8899/ })).toBeDefined()
     // the simulator needs no address typed: Use and the system proxy do it
     expect(await ui.find({ key: 'system-proxy' })).toBeDefined()
+    await ui.press({ key: 'sub-real' })
+
+    expect(await ui.find({ text: /Server 10\.7\.9\.5 {2}Port 8899/ })).toBeDefined()
     expect(await ui.find({ text: /not 10\.20\.133\.214 \(VPN\)/ })).toBeDefined()
     expect(await ui.find({ key: 'copy-ip' })).toBeDefined()
     await ui.press({ key: 'listen-lan' })
     expect(machine.configSets).toEqual([['proxy.listen', 'lan']])
 
     await ui.press({ key: 'tab-android' })
+    await ui.press({ key: 'sub-virtual' })
     expect(await ui.find({ text: /Server 10\.0\.2\.2 {2}Port 8899/ })).toBeDefined()
     await ui.press({ key: 'back' })
     await ui.press({ key: 'toggle' })
@@ -320,6 +324,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ text: /Scan with/ })).toBeUndefined()
     for (const tab of ['ios', 'android']) {
       await ui.press({ key: `tab-${tab}` })
+      await ui.press({ key: 'sub-real' })
       expect(await ui.find({ text: 'http://10.7.9.5:8899/' })).toBeDefined()
       expect(await ui.find(surface === 'terminal' ? { type: 'Raster', key: 'qr' } : { type: 'Svg' })).toBeDefined()
       expect(await ui.find({ key: 'listen-local' })).toBeDefined()
@@ -330,7 +335,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.unmount()
   })
 
-  test(`${surface}: listening on this Mac only, there is no code to scan`, SLOW, async ($, on) => {
+  test(`${surface}: listening on this Mac only, the code shows with what to do first`, SLOW, async ($, on) => {
     const clock = mock.clock(on)
     fakeMachine(on, clock)
     const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
@@ -338,7 +343,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await clock.advance(250)
     await ui.press({ key: 'setup' })
     await ui.press({ key: 'tab-ios' })
+    // the simulator sub-tab is about the simulator: no phone here
     expect(await ui.find({ text: /Scan with/ })).toBeUndefined()
+    await ui.press({ key: 'sub-real' })
+    expect(await ui.find({ text: /Scan with/ })).toBeDefined()
+    expect(await ui.find({ text: /Turn on Listen on LAN first/ })).toBeDefined()
     expect(await ui.find({ key: 'listen-lan' })).toBeDefined()
     await ui.press({ key: 'back' })
     await ui.press({ key: 'toggle' })
@@ -578,7 +587,12 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ key: 'avd-ca:Pixel_8_API_35' })).toBeDefined()
     expect(await ui.find({ text: 'emulator-5554' })).toBeDefined()
     await ui.press({ key: 'avd-start:Pixel_6' })
-    expect(machine.ran.join('\n')).toContain("nohup 'emulator' -avd 'Pixel_6' -http-proxy http://127.0.0.1:8899")
+    const did = machine.ran.join('\n')
+    expect(did).toContain("nohup 'emulator' -avd 'Pixel_6' -http-proxy http://127.0.0.1:8899")
+    // once it has booted, its browser opens the CA page
+    expect(did).toContain('adb -s emulator-5556 shell while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 1; done')
+    expect(did).toContain('adb -s emulator-5556 shell am start -a android.intent.action.VIEW -d http://claude.proxy/')
+    expect(await ui.find({ text: /Pixel_6 is up behind the proxy/ })).toBeDefined()
     await ui.press({ key: 'back' })
     await ui.press({ key: 'toggle' })
     await clock.advance(200)
@@ -599,6 +613,31 @@ test('the macOS tab trusts the CA in one press', SLOW, async ($, on) => {
   expect(machine.ran.join('\n')).toContain(`security add-trusted-cert -r trustRoot -k ${HOME}/Library/Keychains/login.keychain-db ${READY.ca.path}`)
   expect(await ui.find({ text: 'yes ✓' })).toBeDefined()
   expect(await ui.find({ key: 'mac-trust' })).toBeUndefined()
+  await ui.press({ key: 'back' })
+  await ui.press({ key: 'toggle' })
+  await clock.advance(200)
+  await ui.unmount()
+})
+
+test('an empty list offers the one-press ways in', SLOW, async ($, on) => {
+  const clock = mock.clock(on)
+  const machine = fakeMachine(on, clock, {}, true)
+  const ui = await $.ui.mount({ plugin: 'proxy', surface: 'terminal', ...PANE })
+  expect(await ui.find({ key: 'qs-start' })).toBeDefined()
+  await ui.press({ key: 'toggle' })
+  await clock.advance(250)
+  // the simulators are known once a tab has looked
+  await ui.press({ key: 'setup' })
+  await ui.press({ key: 'tab-ios' })
+  await ui.press({ key: 'back' })
+  expect(await ui.find({ text: /Waiting for requests/ })).toBeDefined()
+  expect((await ui.find({ key: 'qs-browser' }))?.text).toBe('Open Google Chrome')
+  expect((await ui.find({ key: 'qs-simulator' }))?.text).toBe('Use iPhone 16')
+  await ui.press({ key: 'qs-browser' })
+  expect(machine.ran.join('\n')).toContain('open -na /Applications/Google Chrome.app --args')
+  await ui.press({ key: 'qs-phone' })
+  expect((await ui.find({ key: 'sub-real' }))?.props.variant).toBe('primary')
+  expect(await ui.find({ text: /Scan with the iPhone's camera/ })).toBeDefined()
   await ui.press({ key: 'back' })
   await ui.press({ key: 'toggle' })
   await clock.advance(200)
