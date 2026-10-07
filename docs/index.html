@@ -165,6 +165,7 @@
     <li>Certificate trouble made visible: a client that refuses the proxy certificate, because the CA is not trusted or the app pins certificates, shows up as a <code>CERT</code> row.</li>
     <li>A setup page served by the proxy at <code>http://claude.proxy/</code> with an iOS <code>.mobileconfig</code>, an Android <code>.crt</code> and a <code>.pem</code>.</li>
     <li>Safe on the network: in <code>lan</code> mode phones can use it, but nothing on the network can reach this Mac's localhost through it.</li>
+    <li>Tracked domains per session: decrypt and record only your app's hosts, wildcards included; everything else passes through untouched, so a phone's own services keep working.</li>
     <li>A rules engine: delays, throttling, mocked answers, rewritten headers, URLs and JSON bodies, status codes, dropped connections and scripts, chained by priority.</li>
     <li>No dependencies: a Node.js sidecar and <code>openssl</code>.</li>
   </ul>

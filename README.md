@@ -54,6 +54,8 @@ work:
 - Hosts to tunnel without decryption (pinned services), Apple's by default.
 - Safe on the network: in `lan` mode, phones can use the proxy, but nothing on the network can use
   it to reach this Mac's localhost.
+- Tracked domains per session: decrypt and record only your app's hosts (wildcards welcome);
+  everything else passes through untouched, so a phone's own services keep working.
 - A rules engine: delays, throttling, mocks, rewritten headers, URLs and bodies, status codes,
   dropped connections and scripts, chained by priority; managed in the pane and by Claude.
 - No dependencies: a Node.js sidecar and `openssl`, nothing to install from npm.
@@ -75,6 +77,7 @@ Answer `y` to add the marketplace and pick a scope. Then:
 /proxy stop       stop it (and point Android devices back)
 /proxy clear      clear the list
 /proxy rules      the rules that change requests and responses
+/proxy track      the domains this session decrypts and records
 /proxy status     one line about its state
 /proxy tree       show the requests as a tree (host → path → requests)
 /proxy list       show them as a flat list
@@ -90,6 +93,26 @@ Answer `y` to add the marketplace and pick a scope. Then:
 | Android emulator / phone on USB | **Setup → Android → Android → proxy** points an emulator at `10.0.2.2:8899`, and a USB device at `127.0.0.1:8899` over `adb reverse`. **Revert**, stopping the proxy or ending the session points them back. |
 | Android phone on Wi-Fi | **Setup → Android → Listen on LAN**, scan the QR code to download the certificate and install it, then set the Wi-Fi proxy to the hostname and port the tab shows. Apps trust user CAs only with a `network_security_config`; **config snippet** copies one. |
 | curl, Node, Python, Go | `curl -x http://127.0.0.1:8899 --cacert ~/.claude/proxy-mod/ca/ca.pem …`; **Setup → macOS / CLI** copies `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE`. |
+
+## Tracked domains
+
+A phone talks to dozens of hosts: push, iCloud, analytics, other apps. Turn on the tracking list
+and the proxy decrypts and records only the domains you name; every other connection passes
+through untouched and unrecorded, so the phone's own services keep working (no `CERT` failures on
+pinned hosts) and the list holds your app's traffic alone.
+
+```
+/proxy track app.kolesa.kz *.kolesa.kz     track these (wildcards: *.example.com covers example.com)
+/proxy untrack app.kolesa.kz               stop tracking one
+/proxy untrack                             switch the list off: every domain again
+/proxy track                               open the Domains view
+```
+
+The **Domains** view (`d`) lists the patterns with how many requests each caught, switches the
+list on and off, and shows the hosts that passed through untracked, busiest first, each with
+**track** and **track \*.domain** buttons: connect the phone, use the app, and pick its hosts from
+there. The list belongs to the Claude Code session and comes back with `--resume`. Claude manages
+it with `mcp__proxy__track_domains`.
 
 ## Rules: change requests and responses
 
@@ -177,6 +200,7 @@ For example, `host:*.api.com -type:img is:error`.
 | --- | --- |
 | `mcp__proxy__list_requests({ filter?, limit? })` | The proxy's state and one line per request: id, method, status, URL, size, time, type, error. |
 | `mcp__proxy__get_request({ id, max_body_chars? })` | One request in full: URL, status, timing, client, error, request and response headers, decoded bodies, what the rules did. |
+| `mcp__proxy__track_domains({ add?, remove?, set?, enabled? })` | The session's tracked domains, and the untracked hosts the proxy has seen, busiest first. |
 | `mcp__proxy__list_rules()` | The rules in order, on or off, what each does in words, errors, how many requests each changed. |
 | `mcp__proxy__add_rule({ rule, position? })`, `update_rule({ id, changes?, enabled?, position? })`, `remove_rule({ id })` | Write the rules file; the proxy applies the change at once. |
 

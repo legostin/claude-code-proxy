@@ -16,6 +16,7 @@ import net from 'node:net'
 import os from 'node:os'
 import tls from 'node:tls'
 import zlib from 'node:zlib'
+import { readFileSync, watchFile } from 'node:fs'
 import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
@@ -35,6 +36,7 @@ import {
   urlOf,
 } from './engine.mjs'
 import { networkAddresses } from './network.mjs'
+import { isTracked } from '../shared/rules.mjs'
 
 const MAGIC_HOST = 'claude.proxy'
 const HOP_BY_HOP = new Set([
@@ -54,6 +56,7 @@ const { values: args } = parseArgs({
     'insecure-upstream': { type: 'boolean', default: false },
     rules: { type: 'string' },
     trust: { type: 'string' },
+    tracking: { type: 'string' },
   },
 })
 
@@ -200,10 +203,13 @@ function writeDetail(flow, detail) {
 function emitFlow(flow) {
   emit({ t: 'flow', flow: { ...flow } })
 }
+const emitFlowRecord = emitFlow
 
-function newFlow(fields) {
+const writeDetailRecord = (flow, detail) => writeDetail(flow, detail)
+
+function flowBase() {
   return {
-    id: nextId++,
+    id: 0,
     ts: Date.now(),
     kind: 'http',
     method: 'GET',
@@ -220,8 +226,16 @@ function newFlow(fields) {
     error: null,
     errorCode: null,
     client: null,
-    ...fields,
   }
+}
+
+/** A flow record that takes no id: for exchanges nobody records. */
+function newFlowShape() {
+  return flowBase()
+}
+
+function newFlow(fields) {
+  return { ...flowBase(), id: nextId++, ...fields }
 }
 
 function clientOf(socket) {
@@ -276,6 +290,86 @@ function describeUpstreamError(error) {
 let ca
 let leafs
 let ruleSet = null
+
+// --- tracked domains: only these are decrypted and recorded -------------------
+//
+// The session's list (`--tracking`, `{ enabled, patterns }`), read again as it
+// changes. Traffic to any other host passes through untouched and unrecorded;
+// only how often each host passed is counted, for the mod to suggest.
+
+let tracking = null
+const skipped = new Map()
+let isSkippedChanged = false
+
+function loadTracking() {
+  try {
+    const data = JSON.parse(readFileSync(args.tracking, 'utf8'))
+    tracking = { enabled: data.enabled === true, patterns: Array.isArray(data.patterns) ? data.patterns.filter(p => typeof p === 'string') : [] }
+  } catch {
+    tracking = null
+  }
+  emit({ t: 'tracking', enabled: tracking?.enabled ?? false, patterns: tracking?.patterns ?? [] })
+}
+
+function tracks(host) {
+  return isTracked(tracking, host)
+}
+
+function countSkipped(host) {
+  skipped.set(host, (skipped.get(host) ?? 0) + 1)
+  isSkippedChanged = true
+}
+
+// A tunnel nobody records: for hosts the session does not track.
+function quietTunnel(clientSocket, host, port) {
+  countSkipped(host)
+  if (!isLocalClient(clientOf(clientSocket)) && isLoopback(host)) return clientSocket.destroy()
+  const upstream = net.connect({ port, host, ...reachFor(clientOf(clientSocket)) })
+  upstream.pipe(clientSocket)
+  clientSocket.pipe(upstream)
+  upstream.on('error', () => clientSocket.destroy())
+  clientSocket.on('error', () => upstream.destroy())
+  upstream.on('close', () => clientSocket.destroy())
+  clientSocket.on('close', () => upstream.destroy())
+}
+
+// A plain request nobody records, and no rule touches.
+function passThrough(req, res, target) {
+  countSkipped(target.host)
+  const client = clientOf(req.socket)
+  const isLocal = isLocalClient(client)
+  if (!isLocal && isLoopback(target.host)) {
+    res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
+    return res.end(`Claude Code proxy: ${loopbackRefusal(target.host)}\n`)
+  }
+  const isHttps = target.scheme === 'https'
+  const upstream = (isHttps ? https : http).request({
+    host: target.host,
+    port: target.port,
+    method: req.method,
+    path: target.path,
+    headers: forwardable(req.rawHeaders),
+    agent: isHttps ? (isLocal ? httpsAgent : remoteHttpsAgent) : isLocal ? httpAgent : remoteHttpAgent,
+    servername: net.isIP(target.host) ? undefined : target.host,
+    ...reachFor(client),
+  })
+  upstream.on('response', upstreamRes => {
+    res.writeHead(upstreamRes.statusCode, upstreamRes.statusMessage, forwardable(upstreamRes.rawHeaders))
+    upstreamRes.pipe(res)
+  })
+  upstream.on('error', () => {
+    if (!res.headersSent) {
+      res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
+      res.end()
+    } else {
+      res.destroy()
+    }
+  })
+  res.on('close', () => {
+    if (!res.writableFinished) upstream.destroy()
+  })
+  req.pipe(upstream)
+}
 
 function setupPage() {
   const primary = network.find(entry => entry.isPrimary)
@@ -371,6 +465,7 @@ function handleRequest(req, res, tunnelTarget) {
   const target = resolveTarget(req, tunnelTarget)
   if (!target) return serveSelf(res, req.url ?? '/')
   if (isSelf(target.host, target.port)) return serveSelf(res, target.path)
+  if (!tracks(target.host)) return passThrough(req, res, target)
   exchange(req, res, target).catch(error => {
     emit({ t: 'log', level: 'error', message: `exchange: ${error.stack ?? error.message}` })
     if (!res.headersSent) {
@@ -672,7 +767,12 @@ async function exchange(req, res, target) {
 function handleUpgrade(req, clientSocket, head, tunnelTarget) {
   const target = resolveTarget(req, tunnelTarget)
   if (!target || isSelf(target.host, target.port)) return clientSocket.destroy()
-  const flow = newFlow({
+  // a host the session does not track is passed through and not recorded
+  const quiet = !tracks(target.host)
+  if (quiet) countSkipped(target.host)
+  const emitFlow = quiet ? () => {} : record => emitFlowRecord(record)
+  const writeDetail = quiet ? () => {} : (record, detail) => writeDetailRecord(record, detail)
+  const fields = {
     kind: 'ws',
     method: req.method,
     scheme: target.scheme,
@@ -680,7 +780,8 @@ function handleUpgrade(req, clientSocket, head, tunnelTarget) {
     port: target.port,
     path: target.path,
     client: clientOf(req.socket),
-  })
+  }
+  const flow = quiet ? { ...newFlowShape(), ...fields } : newFlow(fields)
   emitFlow(flow)
   const reqHeaders = pairs(req.rawHeaders)
   writeDetail(flow, { url: `${target.scheme === 'https' ? 'wss' : 'ws'}://${target.host}:${target.port}${target.path}`, reqHeaders, resHeaders: [], req: null, res: null })
@@ -880,6 +981,7 @@ function handleConnect(req, clientSocket, head) {
   clientSocket.on('error', () => {})
   clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
   if (head?.length) clientSocket.unshift(head)
+  if (!tracks(host)) return quietTunnel(clientSocket, host, port)
   if (noDecrypt.some(pattern => matchesHost(host, pattern))) {
     return tunnel(clientSocket, host, port, 'no-decrypt')
   }
@@ -913,6 +1015,16 @@ async function main() {
     return fatal('ca', error.message)
   }
   leafs = createLeafFactory(ca)
+  if (args.tracking) {
+    loadTracking()
+    watchFile(args.tracking, { interval: 400 }, loadTracking)
+  }
+  setInterval(() => {
+    if (!isSkippedChanged) return
+    isSkippedChanged = false
+    const top = [...skipped.entries()].sort((a, b) => b[1] - a[1]).slice(0, 200)
+    emit({ t: 'skipped', hosts: Object.fromEntries(top) })
+  }, 2000).unref()
   if (args.rules) {
     ruleSet = createRuleSet({
       rulesFile: args.rules,

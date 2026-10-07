@@ -193,3 +193,18 @@ tail of its stderr in the pane, [Start] again), the upstream is unreachable
   Edits rewrite the file through `$.fs.write`. Tools: `list_rules`,
   `add_rule`, `update_rule`, `remove_rule`; the rule's JSON schema rides
   in the tools' input schema, past the 2,048-character description limit.
+
+## 0.4.0: tracked domains
+
+- Per session `{ enabled, patterns }`: `$.state`, `$.store` under
+  `tracking:<session id>` (back with `--resume`), and
+  `<data>/sessions/<id>/tracking.json`, which the sidecar watches
+  (`--tracking`). Off or empty, every host is tracked.
+- Host patterns (`shared/rules.mjs`): globs over the host, `*.example.com`
+  covering the apex, or `re:<regex>`; `normalizeHostPattern` cuts a typed
+  URL or `host:port` to the host.
+- Untracked HTTPS is a plain tunnel with no MITM and no record; untracked
+  HTTP and WebSocket upgrades are passed through, never recorded, never
+  touched by rules. The sidecar counts them per host and sends the counts
+  (`skipped`) every two seconds while they change; the Domains view offers
+  each host, and its `*.domain`, to track.

@@ -17,6 +17,8 @@ export type SidecarEvent =
   | { t: 'flow'; flow: ProxyFlow }
   | { t: 'network'; lan: ProxyAddress[] }
   | { t: 'rules'; file: string; total: number; active: number; errors: string[]; untrusted: string[] }
+  | { t: 'tracking'; enabled: boolean; patterns: string[] }
+  | { t: 'skipped'; hosts: Record<string, number> }
   | { t: 'fatal'; code: string; message: string }
   | { t: 'log'; level: string; message: string }
 

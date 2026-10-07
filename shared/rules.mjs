@@ -91,6 +91,48 @@ export function statusMatcher(text) {
   return null
 }
 
+// --- tracked domains ------------------------------------------------------------
+//
+// A session may track some domains only: those are decrypted and recorded,
+// everything else passes through untouched. A host pattern is a glob over the
+// host name (`*.example.com` covers example.com too) or `re:<source>`.
+
+/**
+ * A host pattern from what a person types: a URL, `host:port` or a bare
+ * name all come to the host part, lower-cased. Null when nothing is left.
+ */
+export function normalizeHostPattern(text) {
+  let value = String(text ?? '').trim()
+  if (value === '') return null
+  if (isRegexPattern(value)) return value
+  value = value.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/)[0].toLowerCase()
+  value = value.replace(/:\d+$/, '').replace(/\.$/, '')
+  return /^[a-z0-9*?._-]+$/.test(value) && /[a-z0-9*?]/.test(value) ? value : null
+}
+
+export function matchesHostPattern(pattern, host) {
+  try {
+    return matchesHost(pattern, String(host).toLowerCase())
+  } catch {
+    return false
+  }
+}
+
+/** Whether a host is tracked: everything is, while the list is off or empty. */
+export function isTracked(tracking, host) {
+  if (!tracking || !tracking.enabled || !Array.isArray(tracking.patterns) || tracking.patterns.length === 0) return true
+  return tracking.patterns.some(pattern => matchesHostPattern(pattern, host))
+}
+
+/** `*.example.com` for api.example.com: the wildcard a skipped host suggests. */
+export function wildcardFor(host) {
+  const labels = String(host).toLowerCase().split('.')
+  if (labels.length < 3 || /^\d+$/.test(labels.at(-1))) return null
+  // two-label public suffixes (co.uk, com.au, ...) keep three labels
+  const keep = labels.at(-2).length <= 3 && labels.at(-1).length === 2 && labels.length >= 4 ? 3 : 2
+  return `*.${labels.slice(-keep).join('.')}`
+}
+
 // --- validation ---------------------------------------------------------------
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value)

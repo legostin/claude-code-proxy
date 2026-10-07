@@ -48,3 +48,9 @@ export function scriptsOf(rule: Rule): string[]
 export function describeAction(action: RuleAction): string
 export function describeMatch(match?: RuleMatch): string
 export function describeRule(rule: Rule): string
+
+export type Tracking = { enabled: boolean; patterns: string[] }
+export function normalizeHostPattern(text: string): string | null
+export function matchesHostPattern(pattern: string, host: string): boolean
+export function isTracked(tracking: Tracking | null | undefined, host: string): boolean
+export function wildcardFor(host: string): string | null

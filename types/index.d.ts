@@ -72,10 +72,16 @@ export type ProxyRules = {
   fileErrors: string[]
 }
 
+/** The session's tracked domains: while on and not empty, only these are decrypted and recorded. */
+export type ProxyTracking = {
+  enabled: boolean
+  patterns: string[]
+}
+
 export type ProxySetupTab = 'browser' | 'ios' | 'android' | 'cli'
 
 export type ProxyView = {
-  mode: 'list' | 'detail' | 'setup' | 'rules'
+  mode: 'list' | 'detail' | 'setup' | 'rules' | 'domains'
   selectedId: number | null
   setupTab: ProxySetupTab
   layout?: 'list' | 'tree'
@@ -94,6 +100,9 @@ declare module 'claude-code' {
       emulators: string[]
       expanded: string[]
       rules: ProxyRules
+      tracking: ProxyTracking
+      /** Hosts that passed through untracked, and how often, since the proxy started. */
+      skipped: Record<string, number>
     }
   }
 }

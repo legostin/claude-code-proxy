@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict'
 import { execFile, spawn } from 'node:child_process'
 import { X509Certificate } from 'node:crypto'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import https from 'node:https'
 import { networkInterfaces, tmpdir } from 'node:os'
@@ -281,6 +281,47 @@ describe('sidecar', () => {
       assert.equal(local.stdout, '{"hello":"world"}')
     } finally {
       open.child.kill()
+    }
+  })
+
+  test('records only the tracked domains, and passes the rest through untouched', async () => {
+    const trackingFile = join(dataDir, 'tracking.json')
+    await writeFile(trackingFile, JSON.stringify({ enabled: true, patterns: ['localhost'] }))
+    const tracked = startSidecar(join(dataDir, 'proxy'), ['--tracking', trackingFile, '--insecure-upstream'])
+    const trackedReady = await tracked.waitFor(() => tracked.events.find(e => e.t === 'ready'), 'ready')
+    const via = `http://127.0.0.1:${trackedReady.port}`
+    const recorded = path => [...tracked.flows.values()].filter(f => f.path.startsWith(path))
+    try {
+      assert.deepEqual(tracked.events.find(e => e.t === 'tracking'), { t: 'tracking', enabled: true, patterns: ['localhost'] })
+
+      // 127.0.0.1 is not on the list: answered, never recorded
+      assert.equal((await curl(['-x', via, `http://127.0.0.1:${httpPort}/echo`, '-d', 'a'])).stdout, 'echo:a')
+      const skipped = await tracked.waitFor(() => tracked.events.findLast(e => e.t === 'skipped' && e.hosts['127.0.0.1']), 'skipped')
+      assert.equal(skipped.hosts['127.0.0.1'], 1)
+
+      // localhost is: recorded, and HTTPS to it decrypted
+      assert.equal((await curl(['-x', via, `http://localhost:${httpPort}/echo`, '-d', 'b'])).stdout, 'echo:b')
+      assert.equal((await curl(['-x', via, '--cacert', trackedReady.ca.path, `https://localhost:${httpsPort}/tracked`])).stdout, '<h1>secure</h1>')
+      await tracked.waitFor(() => recorded('/tracked').some(f => f.state === 'done'), 'tracked flow')
+      assert.equal(recorded('/echo').length, 1)
+
+      // the list changes while running: localhost now passes as a plain tunnel
+      const loads = tracked.events.filter(e => e.t === 'tracking').length
+      await writeFile(trackingFile, JSON.stringify({ enabled: true, patterns: ['*.example.com'] }))
+      await tracked.waitFor(() => tracked.events.filter(e => e.t === 'tracking').length > loads, 'tracking reload')
+      const before = tracked.flows.size
+      // the client sees the server's own certificate, so -k: nothing was decrypted
+      assert.equal((await curl(['-k', '-x', via, `https://localhost:${httpsPort}/quiet`])).stdout, '<h1>secure</h1>')
+      await tracked.waitFor(() => tracked.events.findLast(e => e.t === 'skipped' && e.hosts.localhost), 'skipped localhost')
+      assert.equal(tracked.flows.size, before)
+
+      // switched off, the list tracks everything again
+      await writeFile(trackingFile, JSON.stringify({ enabled: false, patterns: ['*.example.com'] }))
+      await tracked.waitFor(() => tracked.events.findLast(e => e.t === 'tracking')?.enabled === false, 'tracking off')
+      assert.equal((await curl(['-x', via, `http://127.0.0.1:${httpPort}/echo`, '-d', 'c'])).stdout, 'echo:c')
+      await tracked.waitFor(() => recorded('/echo').length === 2, 'recorded again')
+    } finally {
+      tracked.child.kill()
     }
   })
 

@@ -1,9 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement, RenderInput } from 'claude-code'
 
-import { describeRule, parseRules, ruleErrors, scriptsOf } from '../shared/rules.mjs'
+import { describeRule, isTracked, matchesHostPattern, normalizeHostPattern, parseRules, ruleErrors, scriptsOf, wildcardFor } from '../shared/rules.mjs'
 import type { Rule } from '../shared/rules.mjs'
-import type { ProxyFlow, ProxyRuleEntry, ProxyRules, ProxySetupTab, ProxyStatus, ProxyView } from '../types'
+import type { ProxyFlow, ProxyRuleEntry, ProxyRules, ProxySetupTab, ProxyStatus, ProxyTracking, ProxyView } from '../types'
 import {
   buildTree,
   clip,
@@ -77,6 +77,10 @@ const noticeAtom = atom({ plugin: 'proxy', key: 'notice' } as const, '')
 const emulatorsAtom = atom({ plugin: 'proxy', key: 'emulators' } as const, [] as string[])
 /** The tree view's open nodes, by TreeNode id. */
 const expandedAtom = atom({ plugin: 'proxy', key: 'expanded' } as const, [] as string[])
+/** The session's tracked domains; off or empty, every domain is tracked. */
+const trackingAtom = atom({ plugin: 'proxy', key: 'tracking' } as const, { enabled: false, patterns: [] } as ProxyTracking)
+/** Hosts that passed through untracked since the proxy started, with counts. */
+const skippedAtom = atom({ plugin: 'proxy', key: 'skipped' } as const, {} as Record<string, number>)
 /** The project's rules file as last read. */
 const rulesAtom = atom({ plugin: 'proxy', key: 'rules' } as const, { file: null, entries: [], fileErrors: [] } as ProxyRules)
 
@@ -196,6 +200,7 @@ async function startProxy($: EngineInterface, options: Options): Promise<void> {
       '--first-id', String(await read($, nextIdAtom)),
       '--no-decrypt', options.noDecrypt,
       '--rules', await rulesFileOf($),
+      '--tracking', await writeTrackingFile($),
       '--trust', await trustFileOf($),
     ],
   })
@@ -235,6 +240,8 @@ async function startProxy($: EngineInterface, options: Options): Promise<void> {
           } else if (event.t === 'rules') {
             // the file changed on disk (an edit, a git checkout): read it again
             await loadRules($)
+          } else if (event.t === 'skipped') {
+            await update($, skippedAtom, () => event.hosts)
           } else if (event.t === 'network') {
             // the Mac joined another network: the phone's address changed
             await update($, statusAtom, (s): ProxyStatus => ({ ...(s ?? STOPPED), lan: event.lan }))
@@ -580,6 +587,70 @@ async function allowRuleScripts($: EngineInterface, id: string): Promise<void> {
   await say($, `Scripts of ${id} approved; the proxy runs them from now on.`)
 }
 
+// --- tracked domains ------------------------------------------------------------------
+//
+// Per session: kept in $.state, in $.store under the session's id (so a
+// --resume brings it back) and in a file the sidecar watches.
+
+async function trackingFileOf($: EngineInterface): Promise<string> {
+  return `${await dataDirOf($)}/sessions/${await $.session.id()}/tracking.json`
+}
+
+/** Writes the session's list where the sidecar reads it; answers the path. */
+async function writeTrackingFile($: EngineInterface): Promise<string> {
+  const file = await trackingFileOf($)
+  const tracking = await read($, trackingAtom)
+  await $.fs.write(file, `${JSON.stringify(tracking, null, 2)}\n`)
+  return file
+}
+
+async function setTracking($: EngineInterface, change: (now: ProxyTracking) => ProxyTracking): Promise<ProxyTracking> {
+  const next = await update($, trackingAtom, now => {
+    const changed = change(now ?? { enabled: false, patterns: [] })
+    return { enabled: changed.enabled, patterns: [...new Set(changed.patterns)] }
+  })
+  await $.store.set(`tracking:${await $.session.id()}`, next).catch(() => undefined)
+  await writeTrackingFile($)
+  return next
+}
+
+async function restoreTracking($: EngineInterface): Promise<void> {
+  const saved = (await $.store.get(`tracking:${await $.session.id()}`).catch(() => undefined)) as ProxyTracking | undefined
+  if (saved && typeof saved.enabled === 'boolean' && Array.isArray(saved.patterns)) {
+    await update($, trackingAtom, () => ({ enabled: saved.enabled, patterns: saved.patterns.filter(p => typeof p === 'string') }))
+  }
+}
+
+/** Adds what a person or Claude typed: answers the patterns taken and the ones refused. */
+async function trackDomains(
+  $: EngineInterface,
+  texts: readonly string[],
+  isTyped = true,
+): Promise<{ added: string[]; refused: string[] }> {
+  const added: string[] = []
+  const refused: string[] = []
+  // what a person types may hold several, split by spaces or commas; a tool's list holds one per item
+  const items = isTyped ? texts.flatMap(t => t.split(/[\s,]+/)) : texts.map(t => t.trim())
+  for (const text of items.filter(Boolean)) {
+    const pattern = normalizeHostPattern(text)
+    if (pattern) added.push(pattern)
+    else refused.push(text)
+  }
+  if (added.length) await setTracking($, now => ({ enabled: true, patterns: [...now.patterns, ...added] }))
+  return { added, refused }
+}
+
+async function untrackDomains($: EngineInterface, texts: readonly string[]): Promise<void> {
+  const gone = new Set(texts.map(text => normalizeHostPattern(text) ?? text))
+  await setTracking($, now => ({ ...now, patterns: now.patterns.filter(pattern => !gone.has(pattern)) }))
+}
+
+function trackingLine(tracking: ProxyTracking): string {
+  return tracking.enabled && tracking.patterns.length
+    ? `tracking ${tracking.patterns.length} ${tracking.patterns.length === 1 ? 'domain' : 'domains'}`
+    : 'tracking every domain'
+}
+
 // --- the pane -------------------------------------------------------------------
 
 
@@ -610,8 +681,8 @@ function statusColor(flow: ProxyFlow): string | undefined {
   return 'success'
 }
 
-function phaseLine(status: ProxyStatus, total: number, shown: number, hasFilter: boolean): string {
-  const requests = `${total} ${total === 1 ? 'request' : 'requests'}`
+function phaseLine(status: ProxyStatus, total: number, shown: number, hasFilter: boolean, tracking: ProxyTracking): string {
+  const requests = `${total} ${total === 1 ? 'request' : 'requests'}${tracking.enabled && tracking.patterns.length ? ` · ${trackingLine(tracking)}` : ''}`
   const counts = hasFilter ? `${shown} of ${requests} match` : requests
   switch (status.phase) {
     case 'running': {
@@ -633,6 +704,7 @@ async function drawPane($: EngineInterface, e: PaneEvent, options: Options): Pro
   if (view.mode === 'detail' && view.selectedId !== null) return drawDetail($, e, view.selectedId, options)
   if (view.mode === 'setup') return drawSetup($, e, view.setupTab, options)
   if (view.mode === 'rules') return drawRules($, e)
+  if (view.mode === 'domains') return drawDomains($, e)
   return drawList($, e, options)
 }
 
@@ -660,6 +732,7 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
     update($, expandedAtom, list => ((list ?? []).includes(id) ? (list ?? []).filter(x => x !== id) : [...(list ?? []), id]))
   const setLayout = (layout: 'list' | 'tree') => chooseLayout($, layout)
 
+  const tracking = await read($, trackingAtom)
   const rules = await read($, rulesAtom)
   const rulesOn = rules.entries.filter(entry => entry.enabled && entry.errors.length === 0 && !entry.isUntrusted).length
   const flowCells = (flow: ProxyFlow, label: string, labelWidth: number) => [
@@ -682,7 +755,7 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
   return (
     <Box flexDirection="column">
       <Text bold color={status.phase === 'running' ? 'success' : status.phase === 'failed' ? 'error' : 'subtle'}>
-        {truncate(phaseLine(status, flows.length, shown.length, parsed.terms.length > 0), width)}
+        {truncate(phaseLine(status, flows.length, shown.length, parsed.terms.length > 0, tracking), width)}
       </Text>
       <Box flexDirection="row" gap={1} flexWrap="wrap">
         <Button
@@ -713,6 +786,12 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
         {isTree ? (
           <Button key="collapse-all" hotkey="c" label="Collapse all" onPress={() => void update($, expandedAtom, () => [])} />
         ) : null}
+        <Button
+          key="domains"
+          hotkey="d"
+          label={tracking.enabled && tracking.patterns.length ? `Domains (${tracking.patterns.length})` : 'Domains: all'}
+          onPress={() => void update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'domains' }))}
+        />
         <Button
           key="rules"
           hotkey="r"
@@ -1110,6 +1189,90 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
   )
 }
 
+async function drawDomains($: EngineInterface, e: PaneEvent): Promise<RenderElement> {
+  const table = $.ui.resolve(e)
+  const { Box, Text, Button } = table
+  const Input = 'Input' in table ? table.Input : undefined
+  const tracking = await read($, trackingAtom)
+  const skipped = await read($, skippedAtom)
+  const flows = await read($, flowsAtom)
+  const notice = await read($, noticeAtom)
+  const isOn = tracking.enabled && tracking.patterns.length > 0
+  const hits = (pattern: string) => flows.filter(flow => matchesHostPattern(pattern, flow.host)).length
+  const passed = Object.entries(skipped).sort((a, b) => b[1] - a[1])
+  const passedTotal = passed.reduce((sum, [, count]) => sum + count, 0)
+  const add = async (text: string) => {
+    const { added, refused } = await trackDomains($, [text])
+    await say($, [added.length ? `Tracking ${added.join(', ')}.` : '', refused.length ? `Not a host pattern: ${refused.join(', ')}.` : ''].filter(Boolean).join(' '))
+  }
+
+  return (
+    <Box flexDirection="column">
+      <Box flexDirection="row" gap={1} flexWrap="wrap">
+        <Button key="back" hotkey="b" label="← List" onPress={() => void update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'list' }))} />
+        <Button
+          key="tracking-toggle"
+          hotkey="o"
+          variant={tracking.enabled ? 'primary' : undefined}
+          label={tracking.enabled ? 'Tracking list: on' : 'Tracking list: off'}
+          onPress={() => void setTracking($, now => ({ ...now, enabled: !now.enabled }))}
+        />
+      </Box>
+      <Text bold>Tracked domains · this session</Text>
+      <Text dimColor>
+        {isOn
+          ? 'Only these are decrypted and recorded; every other connection passes through untouched and unrecorded.'
+          : tracking.enabled
+            ? 'The list is on but empty, so every domain is decrypted and recorded. Add a domain below.'
+            : 'The list is off: every domain is decrypted and recorded.'}
+      </Text>
+      {Input ? (
+        <Input
+          key="track-add"
+          label="Add "
+          placeholder="app.example.com, *.example.com or re:^api\."
+          submitLabel="track"
+          value=""
+          onSubmit={value => void add(value)}
+        />
+      ) : null}
+      {notice ? <Text color="success">{notice}</Text> : null}
+      {tracking.patterns.map(pattern => (
+        <Box key={`tracked-${pattern}`} flexDirection="row" gap={1}>
+          <Text color={tracking.enabled ? 'success' : 'subtle'}>{pattern}</Text>
+          <Text dimColor>
+            {hits(pattern)} {hits(pattern) === 1 ? 'request' : 'requests'}
+          </Text>
+          <Button plain key={`untrack:${pattern}`} label="remove" dimColor onPress={() => void untrackDomains($, [pattern])} />
+        </Box>
+      ))}
+      <Box flexDirection="column" marginTop={1}>
+        <Text bold>Passed through, not tracked</Text>
+        {passed.length === 0 ? (
+          <Text dimColor>{isOn ? 'Nothing yet.' : 'While the list is on, the hosts it leaves out show here with Track buttons.'}</Text>
+        ) : (
+          <Text dimColor>
+            {passedTotal} {passedTotal === 1 ? 'connection' : 'connections'} to {passed.length} {passed.length === 1 ? 'host' : 'hosts'} since the proxy started
+          </Text>
+        )}
+        {passed.slice(0, 15).map(([host, count]) => {
+          const wildcard = wildcardFor(host)
+          return (
+            <Box key={`passed-${host}`} flexDirection="row" gap={1} flexWrap="wrap">
+              <Text>{host}</Text>
+              <Text dimColor>×{count}</Text>
+              <Button plain key={`track:${host}`} label="track" onPress={() => void add(host)} />
+              {wildcard && !tracking.patterns.includes(wildcard) ? (
+                <Button plain key={`track:${wildcard}`} label={`track ${wildcard}`} onPress={() => void add(wildcard)} />
+              ) : null}
+            </Box>
+          )
+        })}
+      </Box>
+    </Box>
+  )
+}
+
 async function openRules($: EngineInterface): Promise<void> {
   await loadRules($)
   await update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'rules' }))
@@ -1289,6 +1452,12 @@ function optionsOf(raw: Record<string, unknown>): Options {
 }
 
 async function statusText($: EngineInterface): Promise<string> {
+  const tracking = await read($, trackingAtom)
+  const scope = tracking.enabled && tracking.patterns.length ? ` Only ${tracking.patterns.join(', ')} are decrypted and recorded (track_domains).` : ''
+  return `${await phaseText($)}${scope}`
+}
+
+async function phaseText($: EngineInterface): Promise<string> {
   const status = await read($, statusAtom)
   const flows = await read($, flowsAtom)
   const lan = status.addresses.filter(a => a !== '127.0.0.1')
@@ -1323,7 +1492,7 @@ export const register: Register = (on, raw) => {
     await $.command.register({
       name: 'proxy',
       description: 'HTTPS proxy: captured requests, filter, and setup for a browser, iOS and Android',
-      argumentHint: '[start|stop|clear|setup|rules|status|tree|list]',
+      argumentHint: '[start|stop|clear|setup|rules|track <domains>|untrack <domains>|status|tree|list]',
     })
     await $.tool.register({
       name: 'list_requests',
@@ -1395,6 +1564,24 @@ export const register: Register = (on, raw) => {
       description: 'Remove a proxy rule by id.',
       inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
     })
+    await $.tool.register({
+      name: 'track_domains',
+      description:
+        "Show or change the session's tracked domains. While the list is on and not empty, the proxy decrypts and records only these hosts; " +
+        'every other connection passes through untouched and unrecorded (so a phone\'s system services keep working and the list stays clean). ' +
+        'Patterns: app.example.com, *.example.com (covers example.com too), or re:<regex>; URLs are cut to their host. ' +
+        'Answers the list and the untracked hosts the proxy has seen, busiest first. With no arguments it only answers.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          add: { type: 'array', items: { type: 'string' }, description: 'Patterns to track; adding turns the list on.' },
+          remove: { type: 'array', items: { type: 'string' }, description: 'Patterns to stop tracking.' },
+          set: { type: 'array', items: { type: 'string' }, description: 'Replace the whole list.' },
+          enabled: { type: 'boolean', description: 'Turn the list on or off (off tracks every domain).' },
+        },
+      },
+    })
+    await restoreTracking($).catch(() => undefined)
     await loadRules($).catch(() => undefined)
     const remembered = await $.store.get('layout').catch(() => undefined)
     if (remembered === 'tree' || remembered === 'list') {
@@ -1414,8 +1601,33 @@ export const register: Register = (on, raw) => {
   })
 
   on('command.run', { command: 'proxy' }, async ($, e) => {
-    const arg = e.args.trim().toLowerCase()
+    const [first = '', ...rest] = e.args.trim().split(/\s+/)
+    const arg = first.toLowerCase()
     switch (arg) {
+      case 'track': {
+        if (rest.length === 0) {
+          await update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'domains' }))
+          await openPane($)
+          return { text: 'Tracked domains are open in the Proxy pane.' }
+        }
+        const { added, refused } = await trackDomains($, rest)
+        const tracking = await read($, trackingAtom)
+        return {
+          text: [
+            added.length ? `Tracking ${tracking.patterns.join(', ')}; every other domain passes through unrecorded.` : '',
+            refused.length ? `Not a host pattern: ${refused.join(', ')}.` : '',
+          ].filter(Boolean).join(' '),
+        }
+      }
+      case 'untrack': {
+        if (rest.length === 0) {
+          await setTracking($, now => ({ ...now, enabled: false }))
+          return { text: 'The tracking list is off: every domain is decrypted and recorded.' }
+        }
+        await untrackDomains($, rest)
+        const tracking = await read($, trackingAtom)
+        return { text: tracking.patterns.length ? `Tracking ${tracking.patterns.join(', ')}.` : 'No tracked domains left: every domain is decrypted and recorded.' }
+      }
       case 'start':
         await startProxy($, options)
         return { text: 'The proxy is starting. /proxy opens the pane.' }
@@ -1446,11 +1658,42 @@ export const register: Register = (on, raw) => {
         await startProxy($, options)
         return { text: 'The Proxy pane is open.' }
       default:
-        return { text: `Unknown "${arg}". /proxy [start|stop|clear|setup|rules|status|tree|list]` }
+        return { text: `Unknown "${arg}". /proxy [start|stop|clear|setup|rules|track|untrack|status|tree|list]` }
     }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => drawPane($, e, options))
+
+  on('tool.call', { tool: 'mcp__proxy__track_domains' }, async ($, e) => {
+    const notes: string[] = []
+    const list = (value: unknown) => (Array.isArray(value) ? value.map(String) : [])
+    if (Array.isArray(e.set)) {
+      const patterns = list(e.set).map(text => normalizeHostPattern(text))
+      const refused = list(e.set).filter((_, i) => !patterns[i])
+      await setTracking($, now => ({ enabled: now.enabled || patterns.length > 0, patterns: patterns.filter((p): p is string => !!p) }))
+      if (refused.length) notes.push(`Not host patterns: ${refused.join(', ')}.`)
+    }
+    if (Array.isArray(e.add)) {
+      const { refused } = await trackDomains($, list(e.add), false)
+      if (refused.length) notes.push(`Not host patterns: ${refused.join(', ')}.`)
+    }
+    if (Array.isArray(e.remove)) await untrackDomains($, list(e.remove))
+    if (typeof e.enabled === 'boolean') await setTracking($, now => ({ ...now, enabled: e.enabled as boolean }))
+    const tracking = await read($, trackingAtom)
+    const skipped = Object.entries(await read($, skippedAtom)).sort((a, b) => b[1] - a[1])
+    const lines = [
+      ...notes,
+      tracking.enabled && tracking.patterns.length
+        ? `The list is on: only ${tracking.patterns.join(', ')} are decrypted and recorded.`
+        : tracking.enabled
+          ? 'The list is on but empty: every domain is decrypted and recorded.'
+          : `The list is off: every domain is decrypted and recorded.${tracking.patterns.length ? ` Kept for later: ${tracking.patterns.join(', ')}.` : ''}`,
+      skipped.length
+        ? `Passed through untracked since the proxy started: ${skipped.slice(0, 30).map(([host, count]) => `${host} ×${count}`).join(', ')}`
+        : 'No untracked host has passed through yet.',
+    ]
+    return { result: lines.join('\n') }
+  }).catch(() => ({ deny: 'proxy: could not change the tracked domains; try again.' }))
 
   on('tool.call', { tool: 'mcp__proxy__list_rules' }, async $ => ({ result: await rulesText($) })).catch(() => ({
     deny: 'proxy: could not read the rules file; try again.',

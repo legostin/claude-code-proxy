@@ -88,7 +88,8 @@ function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string
   on('process.spawn', async function* ($, e) {
     spawned.push(e.argv)
     const sent = FLOWS.map(f => (ruledFlow && f.id === 2 ? { ...f, rules: ['mock-login'] } : f))
-    const text = [READY, ...sent.map(f => ({ t: 'flow', flow: f }))].map(event => `${JSON.stringify(event)}\n`).join('')
+    const skipped = { t: 'skipped', hosts: { 'gateway.icloud.com': 12, 'api.kolesa.kz': 3 } }
+    const text = [READY, ...sent.map(f => ({ t: 'flow', flow: f })), skipped].map(event => `${JSON.stringify(event)}\n`).join('')
     // cut mid-line, as a pipe may
     yield { stream: 'stdout' as const, text: text.slice(0, 50) }
     yield { stream: 'stdout' as const, text: text.slice(50) }
@@ -439,6 +440,62 @@ test('a request a rule changed is marked in the list and explained in its detail
   } finally {
     ruledFlow = false
   }
+})
+
+const TRACKING_FILE = `${HOME}/.claude/proxy-mod/sessions/session/tracking.json`
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: the domains view tracks what you add and offers what passed through`, SLOW, async ($, on) => {
+    const clock = mock.clock(on)
+    const machine = fakeMachine(on, clock)
+    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(250)
+    expect(machine.spawned[0]).toContain('--tracking')
+    expect((await ui.find({ key: 'domains' }))?.text).toBe('Domains: all')
+    await ui.press({ key: 'domains' })
+    expect(await ui.find({ text: /The list is off/ })).toBeDefined()
+
+    await ui.input({ key: 'track-add', text: 'https://App.Example.com/v1/feed?x=1', kind: 'submit' })
+    expect(JSON.parse(machine.files[TRACKING_FILE]!)).toEqual({ enabled: true, patterns: ['app.example.com'] })
+    expect(await ui.find({ text: /Only these are decrypted and recorded/ })).toBeDefined()
+    expect(await ui.find({ text: 'app.example.com' })).toBeDefined()
+
+    // what passed through, busiest first, one press to track it
+    expect(await ui.find({ text: 'gateway.icloud.com' })).toBeDefined()
+    expect(await ui.find({ text: /15 connections to 2 hosts/ })).toBeDefined()
+    await ui.press({ key: 'track:*.kolesa.kz' })
+    expect(JSON.parse(machine.files[TRACKING_FILE]!).patterns).toEqual(['app.example.com', '*.kolesa.kz'])
+
+    await ui.press({ key: 'untrack:app.example.com' })
+    await ui.press({ key: 'tracking-toggle' })
+    expect(JSON.parse(machine.files[TRACKING_FILE]!)).toEqual({ enabled: false, patterns: ['*.kolesa.kz'] })
+    await ui.press({ key: 'back' })
+    expect((await ui.find({ key: 'domains' }))?.text).toBe('Domains: all')
+    await ui.press({ key: 'toggle' })
+    await clock.advance(200)
+    await ui.unmount()
+  })
+}
+
+test('Claude tracks domains through the tool, and sees what passed through', SLOW, async ($, on) => {
+  const clock = mock.clock(on)
+  const machine = fakeMachine(on, clock)
+  const ui = await $.ui.mount({ plugin: 'proxy', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'toggle' })
+  await clock.advance(250)
+  const answer = String((await $.tool.call({ tool: 'mcp__proxy__track_domains', add: ['*.kolesa.kz', 'not a host!'] })).result)
+  expect(answer).toContain('Not host patterns: not a host!.')
+  expect(answer).toContain('only *.kolesa.kz are decrypted and recorded')
+  expect(answer).toContain('gateway.icloud.com ×12, api.kolesa.kz ×3')
+  expect(JSON.parse(machine.files[TRACKING_FILE]!)).toEqual({ enabled: true, patterns: ['*.kolesa.kz'] })
+  const listed = String((await $.tool.call({ tool: 'mcp__proxy__list_requests' })).result)
+  expect(listed).toContain('Only *.kolesa.kz are decrypted and recorded')
+  const off = String((await $.tool.call({ tool: 'mcp__proxy__track_domains', enabled: false })).result)
+  expect(off).toContain('The list is off')
+  await ui.press({ key: 'toggle' })
+  await clock.advance(200)
+  await ui.unmount()
 })
 
 test('the tools list and show captured requests for the model', SLOW, async ($, on) => {
