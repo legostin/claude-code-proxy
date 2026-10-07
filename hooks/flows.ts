@@ -16,6 +16,7 @@ export type SidecarEvent =
     }
   | { t: 'flow'; flow: ProxyFlow }
   | { t: 'network'; lan: ProxyAddress[] }
+  | { t: 'rules'; file: string; total: number; active: number; errors: string[]; untrusted: string[] }
   | { t: 'fatal'; code: string; message: string }
   | { t: 'log'; level: string; message: string }
 
@@ -34,6 +35,8 @@ export type FlowDetail = ProxyFlow & {
   statusMessage?: string | null
   reqHeaders: [string, string][]
   resHeaders: [string, string][]
+  /** What the rules did, one line each, `id: what`. */
+  ruleLog?: string[]
   req: FlowBody | null
   res: FlowBody | null
 }
@@ -165,6 +168,7 @@ const IS_TESTS: Record<string, (flow: ProxyFlow) => boolean> = {
   https: flow => flow.scheme === 'https',
   http: flow => flow.scheme === 'http',
   rejected: flow => flow.errorCode === 'client-rejected-cert',
+  modified: flow => (flow.rules?.length ?? 0) > 0,
 }
 
 export function parseFilter(query: string): ParsedFilter {
@@ -215,6 +219,9 @@ export function parseFilter(query: string): ParsedFilter {
         break
       case 'client':
         test = flow => (flow.client ?? '').includes(value)
+        break
+      case 'rule':
+        test = flow => (flow.rules ?? []).includes(value)
         break
       default: {
         const v = token.toLowerCase()
@@ -267,7 +274,8 @@ export function flowTable(flows: readonly ProxyFlow[]): string {
   return flows
     .map(flow => {
       const error = flow.error ? `  ! ${truncate(flow.error, 160)}` : ''
-      return `#${flow.id}  ${flow.method.padEnd(7)} ${statusLabel(flow).padEnd(4)} ${flowUrl(flow)}  ${formatSize(flow.resSize)}  ${formatDuration(flow.durationMs)}  ${typeOf(flow)}${error}`
+      const rules = flow.rules?.length ? `  rules: ${flow.rules.join(', ')}` : ''
+      return `#${flow.id}  ${flow.method.padEnd(7)} ${statusLabel(flow).padEnd(4)} ${flowUrl(flow)}  ${formatSize(flow.resSize)}  ${formatDuration(flow.durationMs)}  ${typeOf(flow)}${rules}${error}`
     })
     .join('\n')
 }

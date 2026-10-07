@@ -48,7 +48,7 @@
     {
       "@type": "Question",
       "name": "Is it a replacement for Proxyman, Charles or mitmproxy?",
-      "acceptedAnswer": { "@type": "Answer", "text": "For everyday debugging of what an app sent and what came back, yes, without leaving Claude Code. It has no breakpoints, rewrite rules, HTTP/2 or gRPC." }
+      "acceptedAnswer": { "@type": "Answer", "text": "For everyday debugging of what an app sent and what came back, yes, without leaving Claude Code. Rules cover rewriting, mocking and throttling; there are no interactive breakpoints, HTTP/2 or gRPC." }
     },
     {
       "@type": "Question",
@@ -165,8 +165,22 @@
     <li>Certificate trouble made visible: a client that refuses the proxy certificate, because the CA is not trusted or the app pins certificates, shows up as a <code>CERT</code> row.</li>
     <li>A setup page served by the proxy at <code>http://claude.proxy/</code> with an iOS <code>.mobileconfig</code>, an Android <code>.crt</code> and a <code>.pem</code>.</li>
     <li>Safe on the network: in <code>lan</code> mode phones can use it, but nothing on the network can reach this Mac's localhost through it.</li>
+    <li>A rules engine: delays, throttling, mocked answers, rewritten headers, URLs and JSON bodies, status codes, dropped connections and scripts, chained by priority.</li>
     <li>No dependencies: a Node.js sidecar and <code>openssl</code>.</li>
   </ul>
+
+  <h2 id="rules">Rules: change requests and responses</h2>
+  <p>Ask Claude in plain words, <em>"make GET /api/feed take 3 seconds"</em> or <em>"answer POST /login with a 500"</em>, and it writes the rule into the project's <code>.claude/proxy-rules.json</code>. The proxy applies it at once. The Rules view lists every rule with what it does in words, turns rules on and off, and changes their priority; every matching rule applies, in order.</p>
+<pre><code>{ "id": "slow-feed",
+  "match": { "methods": ["GET"], "path": "/v1/feed*" },
+  "request":  [{ "type": "delay", "ms": 2000 }],
+  "response": [{ "type": "setStatus", "status": 503 },
+               { "type": "mergeJson", "json": { "error": "down" } }] }</code></pre>
+  <div class="grid">
+    <div class="card"><h3>Before sending</h3><p>Delay, throttle, set or remove headers and query, send elsewhere, rewrite the URL or body, answer with a mock, drop the connection.</p></div>
+    <div class="card"><h3>On the response</h3><p>Delay, throttle, set the status, change headers, replace or merge into the JSON body, drop the connection.</p></div>
+    <div class="card"><h3>Scripts when needed</h3><p>A JavaScript step for anything else, run only once you approve it, so a cloned repository cannot run code unasked.</p></div>
+  </div>
 
   <h2 id="clients">Set up a client</h2>
   <div class="table-wrap">
@@ -197,7 +211,7 @@
   <p>Answer <code>y</code> to add the marketplace and pick a scope, then run <code>/proxy</code>.</p>
 
   <h2>FAQ</h2>
-  <details><summary>Is it a replacement for Proxyman, Charles or mitmproxy?</summary><p>For everyday debugging of what an app sent and what came back, yes, without leaving Claude Code. It has no breakpoints, rewrite rules, HTTP/2 or gRPC.</p></details>
+  <details><summary>Is it a replacement for Proxyman, Charles or mitmproxy?</summary><p>For everyday debugging of what an app sent and what came back, yes, without leaving Claude Code. Rules cover rewriting, mocking and throttling; there are no interactive breakpoints, HTTP/2 or gRPC.</p></details>
   <details><summary>Do I have to install the certificate on my Mac?</summary><p>Not for the separate browser, which trusts the proxy by SPKI hash. Safari, native macOS apps and the iOS Simulator need the CA trusted; the setup tabs give the commands.</p></details>
   <details><summary>Why do some requests show CERT?</summary><p>The client refused the proxy's certificate: its CA is not trusted yet, or the app pins its certificates. Finish the setup steps, or add the host to Hosts not to decrypt.</p></details>
   <details><summary>Does my traffic leave my machine?</summary><p>No. The proxy listens on 127.0.0.1 unless you choose lan, recorded requests stay in ~/.claude/proxy-mod, and Claude reads a request only when it calls the tools.</p></details>

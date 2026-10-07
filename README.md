@@ -54,6 +54,8 @@ work:
 - Hosts to tunnel without decryption (pinned services), Apple's by default.
 - Safe on the network: in `lan` mode, phones can use the proxy, but nothing on the network can use
   it to reach this Mac's localhost.
+- A rules engine: delays, throttling, mocks, rewritten headers, URLs and bodies, status codes,
+  dropped connections and scripts, chained by priority; managed in the pane and by Claude.
 - No dependencies: a Node.js sidecar and `openssl`, nothing to install from npm.
 
 ## Install
@@ -72,6 +74,7 @@ Answer `y` to add the marketplace and pick a scope. Then:
 /proxy setup      set up a browser, iOS, Android, macOS or CLI client
 /proxy stop       stop it (and point Android devices back)
 /proxy clear      clear the list
+/proxy rules      the rules that change requests and responses
 /proxy status     one line about its state
 /proxy tree       show the requests as a tree (host → path → requests)
 /proxy list       show them as a flat list
@@ -87,6 +90,69 @@ Answer `y` to add the marketplace and pick a scope. Then:
 | Android emulator / phone on USB | **Setup → Android → Android → proxy** points an emulator at `10.0.2.2:8899`, and a USB device at `127.0.0.1:8899` over `adb reverse`. **Revert**, stopping the proxy or ending the session points them back. |
 | Android phone on Wi-Fi | **Setup → Android → Listen on LAN**, scan the QR code to download the certificate and install it, then set the Wi-Fi proxy to the hostname and port the tab shows. Apps trust user CAs only with a `network_security_config`; **config snippet** copies one. |
 | curl, Node, Python, Go | `curl -x http://127.0.0.1:8899 --cacert ~/.claude/proxy-mod/ca/ca.pem …`; **Setup → macOS / CLI** copies `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE`. |
+
+## Rules: change requests and responses
+
+Rules change matching requests before they are sent and their responses before the client gets
+them: slow an endpoint down, answer it with a mock, flip a status code, rewrite a JSON field, send
+`/v1/*` to your local server, drop the connection. Ask Claude in plain words ("make GET /api/feed
+take 3 seconds", "answer POST /login with a 500") and it writes the rule; the **Rules** view
+(`/proxy rules`, or `r` in the pane) lists them with what each does in words, turns them on and
+off, and moves them up and down.
+
+Rules live in the project, in `.claude/proxy-rules.json`, so they can be committed and shared. The
+proxy reloads the file the moment it changes.
+
+```json
+{
+  "rules": [
+    {
+      "id": "slow-feed",
+      "description": "Simulate a slow backend for the feed",
+      "match": { "methods": ["GET"], "host": "api.example.com", "path": "/v1/feed*" },
+      "request": [{ "type": "delay", "ms": 2000 }],
+      "response": [
+        { "type": "setStatus", "status": 503 },
+        { "type": "mergeJson", "json": { "error": "down" } }
+      ]
+    }
+  ]
+}
+```
+
+**Order and chaining.** The first rule applies first. Every matching rule that is on applies, in
+order, and the actions inside a rule apply in order; `"stop": true` ends the chain.
+
+**Match.** Every condition given must hold: `url`, `host`, `path` (globs such as `*.example.com` or
+`/v1/*`, or `re:<regex>`), `methods`, `headers`, `query`, `bodyContains`, and on the response side
+`status` (`404`, `4xx`, `>=400`, `500-599`) and `contentType`.
+
+| Action | Before sending | On the response |
+| --- | :-: | :-: |
+| `delay {ms, msMax?}`, `throttle {bytesPerSecond}` | ✓ | ✓ |
+| `setHeader {name, value}`, `removeHeader {name}` | ✓ | ✓ |
+| `setQuery`, `removeQuery` | ✓ | |
+| `mapRemote {scheme?, host?, port?, path?}`, `replaceUrl {pattern, with}` | ✓ | |
+| `setBody {text \| json \| file}`, `replaceBody {pattern, with}`, `mergeJson {json}` | ✓ | ✓ |
+| `respond {status, headers?, text \| json \| file}`: answer without the server | ✓ | |
+| `setStatus {status}` | | ✓ |
+| `fail {kind: reset \| close \| timeout}` | ✓ | ✓ |
+| `script {code}` | ✓ | ✓ |
+
+A response body is held back only when a rule changes it (decoded from gzip or brotli first);
+rules that change only headers or the status keep the response streaming, so server-sent events
+still work.
+
+**Scripts.** `code` is the body of `async (req, res, ctx) => {}`, run in the proxy: before sending
+it can change `req.method`, `req.url`, `req.headers`, `req.body` or set
+`req.respond = { status, headers, body }`; on the response it can change `res.status`,
+`res.headers` and `res.body` (`req.json()` and `res.json()` parse the bodies). A script runs only
+once its SHA-256 is approved, so a rules file that came with a cloned repository cannot run code on
+your machine unasked: press **Allow script** in the Rules view. Scripts Claude adds through its tools
+are approved with them.
+
+**In the list,** a request a rule changed is marked `✎`; its detail says what each rule did, and
+the filter takes `is:modified` and `rule:<id>`.
 
 ## Filter
 
@@ -110,7 +176,9 @@ For example, `host:*.api.com -type:img is:error`.
 | Tool | What the model gets |
 | --- | --- |
 | `mcp__proxy__list_requests({ filter?, limit? })` | The proxy's state and one line per request: id, method, status, URL, size, time, type, error. |
-| `mcp__proxy__get_request({ id, max_body_chars? })` | One request in full: URL, status, timing, client, error, request and response headers, decoded bodies. |
+| `mcp__proxy__get_request({ id, max_body_chars? })` | One request in full: URL, status, timing, client, error, request and response headers, decoded bodies, what the rules did. |
+| `mcp__proxy__list_rules()` | The rules in order, on or off, what each does in words, errors, how many requests each changed. |
+| `mcp__proxy__add_rule({ rule, position? })`, `update_rule({ id, changes?, enabled?, position? })`, `remove_rule({ id })` | Write the rules file; the proxy applies the change at once. |
 
 Ask things like *"list the failed requests to api.example.com and tell me what they have in
 common"* or *"compare request #12 with #14"*. **To prompt** in a request's detail starts such a
@@ -147,7 +215,7 @@ request or Claude asks for one. [docs/design.md](docs/design.md) has the details
 
 **Is it a replacement for Proxyman, Charles or mitmproxy?**
 For everyday "what did my app send and what came back" debugging, yes, without leaving Claude Code.
-It has no breakpoints, rewrite rules, HTTP/2 or gRPC.
+Rules cover rewriting, mocking and throttling; there are no interactive breakpoints, HTTP/2 or gRPC.
 
 **Do I have to install the certificate on my Mac?**
 Not for the separate browser: it trusts the proxy by SPKI hash. Safari, native macOS apps and the
@@ -170,6 +238,7 @@ No. It captures clients you point at it.
 - WebSocket frames are not decoded; an upgrade shows as one row.
 - The macOS system proxy is not switched automatically: if the session died with it on, the Mac
   would lose its network until it is turned off.
+- Rule scripts run in Node's `vm` module inside the proxy: approve only code you would run yourself.
 - Mods are an early-access Claude Code API.
 
 ## Development

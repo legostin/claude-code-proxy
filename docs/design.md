@@ -11,7 +11,8 @@ with a filter. Claude reads the same traffic through tools.
 
 Out of scope for v1: proxying the Bash commands Claude runs, Claude Code's
 own traffic, switching the macOS system proxy automatically, HTTP/2 and gRPC,
-decoding WebSocket frames, breakpoints and rewrites, a QR code.
+decoding WebSocket frames, breakpoints and rewrites, a QR code. (0.2 added
+the QR code, 0.3 rewrite rules.)
 
 ## Architecture
 
@@ -158,3 +159,37 @@ tail of its stderr in the pane, [Start] again), the upstream is unreachable
 - A tree view of the list: origin → path segments → requests, single-child
   chains folded, request and failure counts per node, open nodes kept in
   `$.state`.
+
+## 0.3.0: the rules engine
+
+- **File.** `<project>/.claude/proxy-rules.json`, `{ "rules": [...] }`; the
+  array's order is the priority. The sidecar gets its path (`--rules`) and
+  watches it, and the trust file (`--trust`), with `fs.watchFile`; a change
+  applies to the next request and is reported as a `rules` event.
+- **Shared half.** `shared/rules.mjs`, plain JavaScript imported by both the
+  sidecar and the hooks module: validation with sentences per field,
+  request and response matching, and the one-line description the pane and
+  the tools show. Patterns are globs, or `re:<source>`; `/source/flags` was
+  dropped because every path starts with a slash.
+- **Applying half.** `sidecar/engine.mjs`. The request side runs the
+  matched rules' actions in order on `{ target, headers, body }`; the body
+  is read whole only when a rule matches on it or changes it. `respond`
+  answers without the server, `fail` resets, closes or holds the
+  connection (a reset goes to the TCP socket beneath a TLS one). The
+  response side picks the rules whose response conditions hold; the body is
+  held back and decoded only when an action changes it, so header- and
+  status-only rules keep responses streaming. `stop` ends the chain.
+- **Scripts** run in `node:vm` (one second for the synchronous part, five in
+  all) and only when the SHA-256 of their code is in
+  `<data>/trusted-scripts.json`: approved in the Rules view, or by Claude's
+  `add_rule`/`update_rule`, which go through Claude Code's permissions.
+  `vm` is not a security boundary; the approval is.
+- **Record.** A flow carries `rules` (ids, in order); its detail file
+  carries `ruleLog`, and headers and bodies as the server and the client
+  got them. The list marks such rows `✎`; the filter takes `is:modified`
+  and `rule:<id>`.
+- **Mod.** The Rules view (`/proxy rules`, `r`): order, on/off, ↑ ↓,
+  description, the generated summary, errors, hit counts, Allow script.
+  Edits rewrite the file through `$.fs.write`. Tools: `list_rules`,
+  `add_rule`, `update_rule`, `remove_rule`; the rule's JSON schema rides
+  in the tools' input schema, past the 2,048-character description limit.

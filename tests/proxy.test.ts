@@ -51,6 +51,7 @@ function flow(id: number, extra: Partial<ProxyFlow> = {}): ProxyFlow {
   }
 }
 
+let ruledFlow = false
 const LOGIN = flow(2, { method: 'POST', path: '/v1/login', status: 401, reqSize: 17 })
 const FLOWS = [flow(1), LOGIN, flow(3, { host: 'cdn.example.com', path: '/a.png', contentType: 'image/png' })]
 
@@ -72,7 +73,13 @@ const FILES: Record<string, string> = {
 }
 
 /** Stands for node and the sidecar: answers spawn with READY and the flows. */
-function fakeMachine(on: On, clock: MockClock) {
+const ROOT = '/work/app'
+const RULES_FILE = `${ROOT}/.claude/proxy-rules.json`
+const TRUST_FILE = `${HOME}/.claude/proxy-mod/trusted-scripts.json`
+
+function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string> = {}) {
+  // the disk, fresh for each test: reads see what writes left
+  const files: Record<string, string> = { ...FILES, ...extraFiles }
   const spawned: (readonly string[])[] = []
   const killed: string[] = []
   let isKilled = false
@@ -80,7 +87,8 @@ function fakeMachine(on: On, clock: MockClock) {
   mock.store(on)
   on('process.spawn', async function* ($, e) {
     spawned.push(e.argv)
-    const text = [READY, ...FLOWS.map(f => ({ t: 'flow', flow: f }))].map(event => `${JSON.stringify(event)}\n`).join('')
+    const sent = FLOWS.map(f => (ruledFlow && f.id === 2 ? { ...f, rules: ['mock-login'] } : f))
+    const text = [READY, ...sent.map(f => ({ t: 'flow', flow: f }))].map(event => `${JSON.stringify(event)}\n`).join('')
     // cut mid-line, as a pipe may
     yield { stream: 'stdout' as const, text: text.slice(0, 50) }
     yield { stream: 'stdout' as const, text: text.slice(50) }
@@ -96,9 +104,14 @@ function fakeMachine(on: On, clock: MockClock) {
     return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('fs.read', async ($, e) => {
-    const text = FILES[e.path]
+    const text = files[e.path]
     return text === undefined ? { deny: `ENOENT: ${e.path}` } : { value: text }
   })
+  on('fs.write', async ($, e) => {
+    files[e.path] = e.text
+    return { value: undefined }
+  })
+  on('session.root', async () => ({ value: ROOT }))
   // Chrome is installed; nothing else is.
   on('fs.exists', async ($, e) => ({ value: e.path === '/Applications/Google Chrome.app' }))
   on('session.id', async () => ({ value: 'session' }))
@@ -112,7 +125,7 @@ function fakeMachine(on: On, clock: MockClock) {
     statuses.push(e.text)
     return { value: undefined }
   })
-  return { spawned, killed, statuses, configSets }
+  return { spawned, killed, statuses, configSets, files }
 }
 
 // Each act waits for the sidecar loop the start left running to go quiet.
@@ -316,6 +329,117 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.unmount()
   })
 }
+
+const SCRIPT_CODE = "res.body = 'scripted'"
+const RULES = {
+  rules: [
+    { id: 'slow-feed', name: 'Slow feed', description: 'The feed takes its time', match: { path: '/v1/feed*' }, request: [{ type: 'delay', ms: 2000 }] },
+    { id: 'mock-login', match: { methods: ['POST'], path: '/v1/login' }, request: [{ type: 'respond', status: 500, json: { error: 'down' } }] },
+    { id: 'scripted', response: [{ type: 'script', code: SCRIPT_CODE }] },
+    { id: 'broken', request: [{ type: 'nope' }] },
+  ],
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: the rules view lists, toggles, reorders and approves rules`, SLOW, async ($, on) => {
+    const clock = mock.clock(on)
+    const machine = fakeMachine(on, clock, { [RULES_FILE]: JSON.stringify(RULES) })
+    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    await ui.press({ key: 'rules' })
+
+    expect(await ui.find({ text: /4 rules, 2 on/ })).toBeDefined()
+    expect(await ui.find({ text: 'The feed takes its time' })).toBeDefined()
+    expect(await ui.find({ text: /path \/v1\/feed\* → before sending: wait 2 s/ })).toBeDefined()
+    expect(await ui.find({ text: /answer 500 with JSON \{"error":"down"\} without asking the server/ })).toBeDefined()
+    expect(await ui.find({ text: /request\[0\]: type must be one of/ })).toBeDefined()
+    expect(await ui.find({ text: /script is not approved/ })).toBeDefined()
+
+    await ui.press({ key: 'rule-toggle:slow-feed' })
+    const toggled = JSON.parse(machine.files[RULES_FILE]!) as typeof RULES
+    expect(toggled.rules[0]).toMatchObject({ id: 'slow-feed', enabled: false })
+    expect(await ui.find({ text: /4 rules, 1 on/ })).toBeDefined()
+
+    await ui.press({ key: 'rule-down:slow-feed' })
+    const moved = JSON.parse(machine.files[RULES_FILE]!) as typeof RULES
+    expect(moved.rules.map(rule => rule.id)).toEqual(['mock-login', 'slow-feed', 'scripted', 'broken'])
+
+    await ui.press({ key: 'rule-trust:scripted' })
+    expect(JSON.parse(machine.files[TRUST_FILE]!)).toEqual({ sha256: [await sha256Hex(SCRIPT_CODE)] })
+    expect(await ui.find({ key: 'rule-trust:scripted' })).toBeUndefined()
+    expect(await ui.find({ text: /4 rules, 2 on/ })).toBeDefined()
+
+    await ui.press({ key: 'back' })
+    expect((await ui.find({ key: 'rules' }))?.text).toBe('Rules (2)')
+    await ui.unmount()
+  })
+}
+
+test('Claude adds, changes and removes rules through the tools', SLOW, async ($, on) => {
+  const clock = mock.clock(on)
+  const machine = fakeMachine(on, clock)
+  const rule = { id: 'auth', match: { host: '*.example.com' }, request: [{ type: 'setHeader', name: 'Authorization', value: 'Bearer t' }] }
+
+  const added = String((await $.tool.call({ tool: 'mcp__proxy__add_rule', rule })).result)
+  expect(added).toContain('Added auth: host *.example.com → before sending: set header Authorization: Bearer t')
+  expect(JSON.parse(machine.files[RULES_FILE]!)).toEqual({ rules: [rule] })
+
+  const invalid = String((await $.tool.call({ tool: 'mcp__proxy__add_rule', rule: { id: 'x', request: [{ type: 'delay' }] } })).result)
+  expect(invalid).toContain('Not added')
+  expect(invalid).toContain('ms must be a number')
+  const duplicate = String((await $.tool.call({ tool: 'mcp__proxy__add_rule', rule })).result)
+  expect(duplicate).toContain('exists')
+
+  const scripted = { id: 'first', response: [{ type: 'script', code: 'res.status = 299' }] }
+  await $.tool.call({ tool: 'mcp__proxy__add_rule', rule: scripted, position: 1 })
+  const both = JSON.parse(machine.files[RULES_FILE]!) as { rules: { id: string }[] }
+  expect(both.rules.map(r => r.id)).toEqual(['first', 'auth'])
+  // a script Claude adds is approved with it
+  expect(JSON.parse(machine.files[TRUST_FILE]!).sha256).toEqual([await sha256Hex('res.status = 299')])
+
+  const changed = String((await $.tool.call({ tool: 'mcp__proxy__update_rule', id: 'auth', enabled: false, position: 1, changes: { name: 'Auth header' } })).result)
+  expect(changed).toContain('Changed auth')
+  const after = JSON.parse(machine.files[RULES_FILE]!) as { rules: { id: string; enabled?: boolean; name?: string }[] }
+  expect(after.rules.map(r => r.id)).toEqual(['auth', 'first'])
+  expect(after.rules[0]).toMatchObject({ enabled: false, name: 'Auth header' })
+
+  const listed = String((await $.tool.call({ tool: 'mcp__proxy__list_rules' })).result)
+  expect(listed).toContain('1. auth [off] Auth header')
+  expect(listed).toContain('2. first [on]')
+
+  const removed = String((await $.tool.call({ tool: 'mcp__proxy__remove_rule', id: 'auth' })).result)
+  expect(removed).toContain('Removed auth.')
+  expect((JSON.parse(machine.files[RULES_FILE]!) as { rules: unknown[] }).rules).toHaveLength(1)
+})
+
+test('a request a rule changed is marked in the list and explained in its detail', SLOW, async ($, on) => {
+  const clock = mock.clock(on)
+  const machine = fakeMachine(on, clock)
+  machine.files[`${RUN_DIR}/2.json`] = JSON.stringify({ ...JSON.parse(FILES[`${RUN_DIR}/2.json`]!), ruleLog: ['mock-login: answer 500'] })
+  ruledFlow = true
+  try {
+    const ui = await $.ui.mount({ plugin: 'proxy', surface: 'terminal', ...PANE })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(250)
+    await ui.redraw()
+    expect((await ui.find({ key: 'open-2' }))?.text).toBe('✎ https://api.example.com/v1/login')
+    await ui.press({ key: 'open-2' })
+    expect(await ui.find({ text: /✎ mock-login: answer 500/ })).toBeDefined()
+    await ui.press({ key: 'back' })
+    await ui.input({ key: 'filter', text: 'rule:mock-login', kind: 'change' })
+    expect(await ui.find({ key: 'open-1' })).toBeUndefined()
+    expect(await ui.find({ key: 'open-2' })).toBeDefined()
+    await ui.press({ key: 'toggle' })
+    await clock.advance(200)
+    await ui.unmount()
+  } finally {
+    ruledFlow = false
+  }
+})
 
 test('the tools list and show captured requests for the model', SLOW, async ($, on) => {
   const clock = mock.clock(on)

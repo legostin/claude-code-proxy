@@ -17,6 +17,8 @@ export type ProxyFlow = {
   errorCode: string | null
   client: string | null
   note?: string
+  /** The ids of the rules that changed this exchange, in the order they acted. */
+  rules?: string[]
 }
 
 export type ProxyCa = {
@@ -50,10 +52,30 @@ export type ProxyStatus = {
   error: string | null
 }
 
+/** One rule as the rules view shows it: the file's entry, checked. */
+export type ProxyRuleEntry = {
+  id: string
+  name: string | null
+  description: string | null
+  enabled: boolean
+  /** What it does, in words (shared/rules.mjs describeRule). */
+  summary: string
+  errors: string[]
+  /** It holds a script whose code is not approved yet. */
+  isUntrusted: boolean
+}
+
+export type ProxyRules = {
+  file: string | null
+  entries: ProxyRuleEntry[]
+  /** Problems of the file itself (not JSON, wrong shape). */
+  fileErrors: string[]
+}
+
 export type ProxySetupTab = 'browser' | 'ios' | 'android' | 'cli'
 
 export type ProxyView = {
-  mode: 'list' | 'detail' | 'setup'
+  mode: 'list' | 'detail' | 'setup' | 'rules'
   selectedId: number | null
   setupTab: ProxySetupTab
   layout?: 'list' | 'tree'
@@ -71,6 +93,7 @@ declare module 'claude-code' {
       notice: string
       emulators: string[]
       expanded: string[]
+      rules: ProxyRules
     }
   }
 }

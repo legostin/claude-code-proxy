@@ -1,7 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement, RenderInput } from 'claude-code'
 
-import type { ProxyFlow, ProxySetupTab, ProxyStatus, ProxyView } from '../types'
+import { describeRule, parseRules, ruleErrors, scriptsOf } from '../shared/rules.mjs'
+import type { Rule } from '../shared/rules.mjs'
+import type { ProxyFlow, ProxyRuleEntry, ProxyRules, ProxySetupTab, ProxyStatus, ProxyView } from '../types'
 import {
   buildTree,
   clip,
@@ -75,6 +77,8 @@ const noticeAtom = atom({ plugin: 'proxy', key: 'notice' } as const, '')
 const emulatorsAtom = atom({ plugin: 'proxy', key: 'emulators' } as const, [] as string[])
 /** The tree view's open nodes, by TreeNode id. */
 const expandedAtom = atom({ plugin: 'proxy', key: 'expanded' } as const, [] as string[])
+/** The project's rules file as last read. */
+const rulesAtom = atom({ plugin: 'proxy', key: 'rules' } as const, { file: null, entries: [], fileErrors: [] } as ProxyRules)
 
 // Every function that takes `$` lives in this file: the engine follows `$`
 // into functions of the hooks module itself, never across an import.
@@ -191,6 +195,8 @@ async function startProxy($: EngineInterface, options: Options): Promise<void> {
       '--run', await $.session.id(),
       '--first-id', String(await read($, nextIdAtom)),
       '--no-decrypt', options.noDecrypt,
+      '--rules', await rulesFileOf($),
+      '--trust', await trustFileOf($),
     ],
   })
 
@@ -226,6 +232,9 @@ async function startProxy($: EngineInterface, options: Options): Promise<void> {
               error: null,
             }))
             await showStatus($)
+          } else if (event.t === 'rules') {
+            // the file changed on disk (an edit, a git checkout): read it again
+            await loadRules($)
           } else if (event.t === 'network') {
             // the Mac joined another network: the phone's address changed
             await update($, statusAtom, (s): ProxyStatus => ({ ...(s ?? STOPPED), lan: event.lan }))
@@ -451,6 +460,126 @@ async function openCaPageOnAndroid($: EngineInterface): Promise<void> {
   await say($, `Opened the CA page on ${serials.join(', ')} (the device must be using the proxy).`)
 }
 
+// --- the rules file ------------------------------------------------------------
+//
+// <project>/.claude/proxy-rules.json, which the sidecar applies (see
+// shared/rules.mjs). A rule holding a script runs only once the script's
+// SHA-256 is in <data>/trusted-scripts.json: a cloned project's rules file
+// must not run code on this machine unasked.
+
+async function rulesFileOf($: EngineInterface): Promise<string> {
+  return `${await $.session.root()}/.claude/proxy-rules.json`
+}
+
+async function trustFileOf($: EngineInterface): Promise<string> {
+  return `${await dataDirOf($)}/trusted-scripts.json`
+}
+
+async function sha256(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+async function readTrusted($: EngineInterface): Promise<Set<string>> {
+  try {
+    const data = JSON.parse(await $.fs.read(await trustFileOf($))) as { sha256?: unknown }
+    return new Set(Array.isArray(data.sha256) ? data.sha256.filter((hash): hash is string => typeof hash === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+async function trustScripts($: EngineInterface, codes: readonly string[]): Promise<void> {
+  if (codes.length === 0) return
+  const trusted = await readTrusted($)
+  for (const code of codes) trusted.add(await sha256(code))
+  await $.fs.write(await trustFileOf($), `${JSON.stringify({ sha256: [...trusted] }, null, 2)}\n`)
+}
+
+async function readRulesText($: EngineInterface): Promise<{ file: string; text: string | null }> {
+  const file = await rulesFileOf($)
+  try {
+    return { file, text: await $.fs.read(file) }
+  } catch {
+    return { file, text: null }
+  }
+}
+
+/** Reads the rules file into the rules view's state, and answers it. */
+async function loadRules($: EngineInterface): Promise<ProxyRules> {
+  const { file, text } = await readRulesText($)
+  const parsed = parseRules(text)
+  const trusted = await readTrusted($)
+  const entries: ProxyRuleEntry[] = []
+  for (const { rule, errors } of parsed.rules) {
+    let isUntrusted = false
+    if (errors.length === 0) {
+      for (const code of scriptsOf(rule)) if (!trusted.has(await sha256(code))) isUntrusted = true
+    }
+    entries.push({
+      id: typeof rule?.id === 'string' ? rule.id : '?',
+      name: typeof rule?.name === 'string' ? rule.name : null,
+      description: typeof rule?.description === 'string' ? rule.description : null,
+      enabled: rule?.enabled !== false,
+      summary: errors.length ? '' : describeRule(rule),
+      errors,
+      isUntrusted,
+    })
+  }
+  const value: ProxyRules = { file, entries, fileErrors: parsed.errors }
+  await update($, rulesAtom, () => value)
+  return value
+}
+
+/**
+ * Rewrites the rules file's list through `change`, keeping the rest of the
+ * file; `change` answers the new list, or a string saying why not.
+ * Answers that reason, or null once written.
+ */
+async function editRules($: EngineInterface, change: (rules: Rule[]) => Rule[] | string): Promise<string | null> {
+  const { file, text } = await readRulesText($)
+  let data: { rules: Rule[] } & Record<string, unknown> = { rules: [] }
+  if (text !== null && text.trim() !== '') {
+    try {
+      data = JSON.parse(text) as typeof data
+    } catch {
+      return `${file} is not valid JSON; fix it by hand first`
+    }
+    if (data === null || typeof data !== 'object' || !Array.isArray(data.rules)) return `${file} must hold {"rules": [...]}`
+  }
+  const next = change([...data.rules])
+  if (typeof next === 'string') return next
+  await $.fs.write(file, `${JSON.stringify({ ...data, rules: next }, null, 2)}\n`)
+  await loadRules($)
+  return null
+}
+
+async function toggleRule($: EngineInterface, id: string): Promise<void> {
+  const failure = await editRules($, rules => rules.map(rule => (rule.id === id ? { ...rule, enabled: rule.enabled === false } : rule)))
+  if (failure) await say($, failure)
+}
+
+async function moveRule($: EngineInterface, id: string, by: number): Promise<void> {
+  const failure = await editRules($, rules => {
+    const from = rules.findIndex(rule => rule.id === id)
+    const to = Math.max(0, Math.min(rules.length - 1, from + by))
+    if (from < 0 || from === to) return rules
+    const [moved] = rules.splice(from, 1)
+    rules.splice(to, 0, moved!)
+    return rules
+  })
+  if (failure) await say($, failure)
+}
+
+async function allowRuleScripts($: EngineInterface, id: string): Promise<void> {
+  const { text } = await readRulesText($)
+  const rule = parseRules(text).rules.find(entry => entry.rule?.id === id)?.rule
+  if (!rule) return
+  await trustScripts($, scriptsOf(rule))
+  await loadRules($)
+  await say($, `Scripts of ${id} approved; the proxy runs them from now on.`)
+}
+
 // --- the pane -------------------------------------------------------------------
 
 
@@ -503,6 +632,7 @@ async function drawPane($: EngineInterface, e: PaneEvent, options: Options): Pro
   const view = await read($, viewAtom)
   if (view.mode === 'detail' && view.selectedId !== null) return drawDetail($, e, view.selectedId, options)
   if (view.mode === 'setup') return drawSetup($, e, view.setupTab, options)
+  if (view.mode === 'rules') return drawRules($, e)
   return drawList($, e, options)
 }
 
@@ -530,11 +660,18 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
     update($, expandedAtom, list => ((list ?? []).includes(id) ? (list ?? []).filter(x => x !== id) : [...(list ?? []), id]))
   const setLayout = (layout: 'list' | 'tree') => chooseLayout($, layout)
 
+  const rules = await read($, rulesAtom)
+  const rulesOn = rules.entries.filter(entry => entry.enabled && entry.errors.length === 0 && !entry.isUntrusted).length
   const flowCells = (flow: ProxyFlow, label: string, labelWidth: number) => [
     <Text color={statusColor(flow)}>{statusLabel(flow).padEnd(4)} </Text>,
     <Text bold>{flow.method.slice(0, 7).padEnd(7)} </Text>,
     <Box flexGrow={1}>
-      <Button plain key={`open-${flow.id}`} label={truncate(label, labelWidth)} onPress={() => void open(flow.id)} />
+      <Button
+        plain
+        key={`open-${flow.id}`}
+        label={truncate(flow.rules?.length ? `✎ ${label}` : label, labelWidth)}
+        onPress={() => void open(flow.id)}
+      />
     </Box>,
     <Text dimColor>
       {' '}
@@ -576,6 +713,12 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
         {isTree ? (
           <Button key="collapse-all" hotkey="c" label="Collapse all" onPress={() => void update($, expandedAtom, () => [])} />
         ) : null}
+        <Button
+          key="rules"
+          hotkey="r"
+          label={`Rules (${rulesOn})`}
+          onPress={() => void openRules($)}
+        />
         <Button key="clear" hotkey="x" label="Clear" onPress={() => void clearFlows($)} />
         <Button
           key="setup"
@@ -742,6 +885,17 @@ async function drawDetail($: EngineInterface, e: PaneEvent, id: number, options:
         <Box flexDirection="column">
           <Text color="error">{flow.error}</Text>
           {flow.errorCode && ERROR_HINTS[flow.errorCode] ? <Text dimColor>{ERROR_HINTS[flow.errorCode]}</Text> : null}
+        </Box>
+      ) : null}
+      {detail?.ruleLog?.length ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text bold underline>Rules</Text>
+          {detail.ruleLog.map((line, i) => (
+            <Text key={`rule-log-${i}`} color="claude">
+              ✎ {line}
+            </Text>
+          ))}
+          <Text dimColor>Headers and bodies below are what the server got and what the client got.</Text>
         </Box>
       ) : null}
       {detail ? (
@@ -956,6 +1110,89 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
   )
 }
 
+async function openRules($: EngineInterface): Promise<void> {
+  await loadRules($)
+  await update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'rules' }))
+}
+
+async function drawRules($: EngineInterface, e: PaneEvent): Promise<RenderElement> {
+  const { Box, Text, Button } = $.ui.resolve(e)
+  const rules = await read($, rulesAtom)
+  const flows = await read($, flowsAtom)
+  const notice = await read($, noticeAtom)
+  const hits = (id: string) => flows.filter(flow => flow.rules?.includes(id)).length
+  const on = rules.entries.filter(entry => entry.enabled && entry.errors.length === 0 && !entry.isUntrusted).length
+  const shownFile = rules.file?.replace(/^.*\/(\.claude\/proxy-rules\.json)$/, '$1') ?? '.claude/proxy-rules.json'
+
+  return (
+    <Box flexDirection="column">
+      <Box flexDirection="row" gap={1} flexWrap="wrap">
+        <Button key="back" hotkey="b" label="← List" onPress={() => void update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'list' }))} />
+        <Button key="rules-reload" hotkey="g" label="Reload" onPress={() => void loadRules($)} />
+      </Box>
+      <Text bold>
+        Rules · {shownFile} · {rules.entries.length} {rules.entries.length === 1 ? 'rule' : 'rules'}, {on} on
+      </Text>
+      <Text dimColor>The first rule applies first; every matching rule that is on applies, in order, unless one says stop.</Text>
+      {rules.fileErrors.map((error, i) => (
+        <Text key={`file-error-${i}`} color="error">
+          {error}
+        </Text>
+      ))}
+      {notice ? <Text color="success">{notice}</Text> : null}
+      {rules.entries.length === 0 && rules.fileErrors.length === 0 ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text>No rules yet. Ask Claude, for example:</Text>
+          <Text dimColor>  "make GET /api/feed take 3 seconds"</Text>
+          <Text dimColor>  "answer POST /login with a 500 and an error JSON"</Text>
+          <Text dimColor>  "add an Authorization header to every request to api.example.com"</Text>
+          <Text dimColor>  "send /v1/* to my local server on port 3000"</Text>
+        </Box>
+      ) : null}
+      {rules.entries.map((entry, index) => {
+        const isActive = entry.enabled && entry.errors.length === 0 && !entry.isUntrusted
+        const count = hits(entry.id)
+        return (
+          <Box key={`rule-${entry.id}-${index}`} flexDirection="column" marginTop={1}>
+            <Box flexDirection="row" gap={1} flexWrap="wrap">
+              <Text dimColor>{String(index + 1).padStart(2)}.</Text>
+              <Button
+                plain
+                key={`rule-toggle:${entry.id}`}
+                label={entry.enabled ? '[on] ' : '[off]'}
+                onPress={() => void toggleRule($, entry.id)}
+              />
+              <Text bold color={isActive ? undefined : 'subtle'}>
+                {entry.name ?? entry.id}
+              </Text>
+              {entry.name ? <Text dimColor>({entry.id})</Text> : null}
+              <Button plain key={`rule-up:${entry.id}`} label="↑" onPress={() => void moveRule($, entry.id, -1)} />
+              <Button plain key={`rule-down:${entry.id}`} label="↓" onPress={() => void moveRule($, entry.id, 1)} />
+              <Text dimColor>
+                {count} {count === 1 ? 'hit' : 'hits'}
+              </Text>
+            </Box>
+            {entry.description ? <Text>    {entry.description}</Text> : null}
+            {entry.summary ? <Text dimColor>    {entry.summary}</Text> : null}
+            {entry.errors.map((error, i) => (
+              <Text key={`rule-error-${entry.id}-${i}`} color="error">
+                {'    '}
+                {error}
+              </Text>
+            ))}
+            {entry.isUntrusted ? (
+              <Box flexDirection="row" gap={1} flexWrap="wrap">
+                <Text color="warning">    Its script is not approved yet, so the rule does not run.</Text>
+                <Button key={`rule-trust:${entry.id}`} label="Allow script" onPress={() => void allowRuleScripts($, entry.id)} />
+              </Box>
+            ) : null}
+          </Box>
+        )
+      })}
+    </Box>
+  )
+}
+
 // --- hooks ------------------------------------------------------------------------
 
 const LIST_TOOL = 'mcp__proxy__list_requests'
@@ -965,6 +1202,80 @@ const FILTER_HELP =
   'space-separated terms that must all hold, a leading "-" negates one: free text (substring of the URL), ' +
   'method:POST (or method:get,post), status:4xx | status:404 | status:>=400 | status:400-499, host:api.example.com | host:*.example.com, ' +
   'path:/v1/login, type:json|html|xml|js|css|img|font|media|text|form|ws|tunnel|other, is:error|ok|pending|tunnel|ws|https|rejected, client:192.168.'
+
+const ACTION_TYPES = [
+  'delay', 'throttle', 'setHeader', 'removeHeader', 'setQuery', 'removeQuery', 'mapRemote', 'replaceUrl',
+  'setBody', 'replaceBody', 'mergeJson', 'respond', 'setStatus', 'fail', 'script',
+]
+
+const ACTION_SCHEMA = {
+  type: 'object',
+  description:
+    'One step; its type and fields: delay {ms, msMax?} · throttle {bytesPerSecond} · setHeader {name, value} · removeHeader {name} · ' +
+    'setQuery {name, value} (request) · removeQuery {name} (request) · mapRemote {scheme?, host?, port?, path?} (request: send elsewhere) · ' +
+    'replaceUrl {pattern, with} (request) · setBody {text | json | file} · replaceBody {pattern, with} · mergeJson {json} (deep-merges into a JSON body) · ' +
+    'respond {status, headers?, text | json | file} (request: answer without asking the server) · setStatus {status} (response) · ' +
+    'fail {kind: reset | close | timeout} · script {code}. A replace pattern is re:<regex source> (every match, $1 works in with) or literal text. ' +
+    'file is relative to the project root. script code is the body of async (req, res, ctx) => {}: in request it may change req.method, ' +
+    'req.url, req.headers (lower-case names), req.body, or set req.respond = {status, headers, body}; in response it may change res.status, ' +
+    'res.headers, res.body; req.json() and res.json() parse the bodies; a body may be set to an object. Prefer the other types to scripts.',
+  properties: { type: { type: 'string', enum: ACTION_TYPES } },
+  required: ['type'],
+  additionalProperties: true,
+}
+
+const PATTERN_HELP = 'a glob (* any run, ? one character, case-insensitive, matched whole) or re:<JavaScript regex source>'
+
+const RULE_SCHEMA = {
+  type: 'object',
+  properties: {
+    id: { type: 'string', description: 'Unique in the file: 1-64 of letters, digits, ., _ and -.' },
+    name: { type: 'string', description: 'A short title.' },
+    description: { type: 'string', description: 'Why the rule exists, in one sentence the person reads.' },
+    enabled: { type: 'boolean', description: 'false keeps the rule in the file without applying it.' },
+    match: {
+      type: 'object',
+      description: `Every condition given must hold; no condition matches every request. Patterns are ${PATTERN_HELP}.`,
+      properties: {
+        url: { type: 'string', description: 'The full URL, e.g. https://api.example.com/v1/*' },
+        host: { type: 'string', description: 'api.example.com, or *.example.com (which covers example.com too)' },
+        path: { type: 'string', description: 'The path without the query, e.g. /v1/feed*' },
+        methods: { type: 'array', items: { type: 'string' }, description: 'e.g. ["GET", "POST"]' },
+        headers: { type: 'object', additionalProperties: { type: 'string' }, description: 'Request header name → pattern of its value' },
+        query: { type: 'object', additionalProperties: { type: 'string' }, description: 'Query parameter → pattern of its value' },
+        bodyContains: { type: 'string', description: 'Text the request body holds' },
+        status: { type: 'string', description: 'Response only: 404, 4xx, >=400 or 500-599. A rule with it takes response steps only.' },
+        contentType: { type: 'string', description: 'Response only: part of the response content type, e.g. json' },
+      },
+      additionalProperties: false,
+    },
+    request: { type: 'array', items: ACTION_SCHEMA, description: 'Steps on the request before it is sent, in order.' },
+    response: { type: 'array', items: ACTION_SCHEMA, description: 'Steps on the response before the client gets it, in order.' },
+    stop: { type: 'boolean', description: 'When this rule applies, the rules after it do not.' },
+  },
+  required: ['id'],
+  additionalProperties: false,
+}
+
+async function rulesText($: EngineInterface): Promise<string> {
+  const rules = await loadRules($)
+  const flows = await read($, flowsAtom)
+  const status = await read($, statusAtom)
+  const lines = [
+    `Rules file: ${rules.file}. ${rules.entries.length} rules; earlier rules apply first and every matching rule that is on chains.` +
+      (status.phase === 'running' ? ' The proxy applies changes at once.' : ' The proxy is stopped; the rules apply once it runs.'),
+    ...rules.fileErrors.map(error => `File error: ${error}`),
+  ]
+  rules.entries.forEach((entry, index) => {
+    const hits = flows.filter(flow => flow.rules?.includes(entry.id)).length
+    const state = entry.errors.length ? 'BROKEN' : entry.isUntrusted ? 'SCRIPT NOT APPROVED' : entry.enabled ? 'on' : 'off'
+    lines.push(`${index + 1}. ${entry.id} [${state}]${entry.name ? ` ${entry.name}` : ''} · ${hits} hits`)
+    if (entry.description) lines.push(`   ${entry.description}`)
+    if (entry.summary) lines.push(`   ${entry.summary}`)
+    for (const error of entry.errors) lines.push(`   error: ${error}`)
+  })
+  return lines.join('\n')
+}
 
 function optionsOf(raw: Record<string, unknown>): Options {
   const number = (value: unknown, fallback: number) => (Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : fallback)
@@ -1012,7 +1323,7 @@ export const register: Register = (on, raw) => {
     await $.command.register({
       name: 'proxy',
       description: 'HTTPS proxy: captured requests, filter, and setup for a browser, iOS and Android',
-      argumentHint: '[start|stop|clear|setup|status|tree|list]',
+      argumentHint: '[start|stop|clear|setup|rules|status|tree|list]',
     })
     await $.tool.register({
       name: 'list_requests',
@@ -1042,6 +1353,49 @@ export const register: Register = (on, raw) => {
         required: ['id'],
       },
     })
+    await $.tool.register({
+      name: 'list_rules',
+      description:
+        "List the proxy's rules (<project>/.claude/proxy-rules.json): order (priority), id, on/off, what each does in words, errors, and how many captured requests each changed.",
+      inputSchema: { type: 'object', properties: {} },
+    })
+    await $.tool.register({
+      name: 'add_rule',
+      description:
+        "Add a rule to the proxy's rules engine. A rule changes matching requests before they are sent and their responses before the client gets them: " +
+        'delays, throttling, headers, query, sending elsewhere, mocked answers, rewritten or merged bodies, status codes, failed connections, scripts. ' +
+        'Rules live in <project>/.claude/proxy-rules.json; earlier rules apply first and every matching rule chains. It applies at once while the proxy runs. ' +
+        'Prefer declarative steps; a script you add here is approved to run. Answers the rule in words. Ids of changed requests show in list_requests.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          rule: RULE_SCHEMA,
+          position: { type: 'number', description: '1-based place in the order; the first applies first. Default: last.' },
+        },
+        required: ['rule'],
+      },
+    })
+    await $.tool.register({
+      name: 'update_rule',
+      description:
+        'Change a proxy rule by id: replace any of its fields (match, request and response are replaced whole), turn it on or off, or move it in the order. Answers the rule in words.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'The rule to change.' },
+          changes: { ...RULE_SCHEMA, required: [], description: 'Fields to set; the others stay.' },
+          enabled: { type: 'boolean', description: 'Turn the rule on or off.' },
+          position: { type: 'number', description: '1-based place to move it to; the first applies first.' },
+        },
+        required: ['id'],
+      },
+    })
+    await $.tool.register({
+      name: 'remove_rule',
+      description: 'Remove a proxy rule by id.',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+    })
+    await loadRules($).catch(() => undefined)
     const remembered = await $.store.get('layout').catch(() => undefined)
     if (remembered === 'tree' || remembered === 'list') {
       await update($, viewAtom, (v): ProxyView => ({ ...v, layout: remembered }))
@@ -1073,6 +1427,10 @@ export const register: Register = (on, raw) => {
         return { text: 'The request list is cleared.' }
       case 'status':
         return { text: await statusText($) }
+      case 'rules':
+        await openRules($)
+        await openPane($)
+        return { text: 'The Proxy pane shows the rules.' }
       case 'tree':
       case 'list':
         await chooseLayout($, arg)
@@ -1088,11 +1446,63 @@ export const register: Register = (on, raw) => {
         await startProxy($, options)
         return { text: 'The Proxy pane is open.' }
       default:
-        return { text: `Unknown "${arg}". /proxy [start|stop|clear|setup|status|tree|list]` }
+        return { text: `Unknown "${arg}". /proxy [start|stop|clear|setup|rules|status|tree|list]` }
     }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => drawPane($, e, options))
+
+  on('tool.call', { tool: 'mcp__proxy__list_rules' }, async $ => ({ result: await rulesText($) })).catch(() => ({
+    deny: 'proxy: could not read the rules file; try again.',
+  }))
+
+  on('tool.call', { tool: 'mcp__proxy__add_rule' }, async ($, e) => {
+    const rule = e.rule as Rule
+    const errors = ruleErrors(rule)
+    if (errors.length) return { result: `Not added:\n${errors.join('\n')}` }
+    const failure = await editRules($, rules => {
+      if (rules.some(other => other.id === rule.id)) return `A rule with the id ${rule.id} exists; choose another id or call update_rule.`
+      const at = typeof e.position === 'number' ? Math.max(0, Math.min(rules.length, Math.floor(e.position) - 1)) : rules.length
+      rules.splice(at, 0, rule)
+      return rules
+    })
+    if (failure) return { result: `Not added: ${failure}` }
+    await trustScripts($, scriptsOf(rule))
+    await loadRules($)
+    return { result: `Added ${rule.id}: ${describeRule(rule)}\n\n${await rulesText($)}` }
+  }).catch(() => ({ deny: 'proxy: could not write the rules file; try again.' }))
+
+  on('tool.call', { tool: 'mcp__proxy__update_rule' }, async ($, e) => {
+    const id = String(e.id)
+    let changed: Rule | undefined
+    let problems: string[] = []
+    const failure = await editRules($, rules => {
+      const from = rules.findIndex(rule => rule.id === id)
+      if (from < 0) return `No rule has the id ${id}.`
+      const changes = (e.changes ?? {}) as Partial<Rule>
+      const next: Rule = { ...rules[from]!, ...changes }
+      if (typeof e.enabled === 'boolean') next.enabled = e.enabled
+      problems = ruleErrors(next)
+      if (problems.length) return 'invalid'
+      if (next.id !== id && rules.some(rule => rule.id === next.id)) return `A rule with the id ${next.id} exists.`
+      rules.splice(from, 1)
+      const to = typeof e.position === 'number' ? Math.max(0, Math.min(rules.length, Math.floor(e.position) - 1)) : from
+      rules.splice(to, 0, next)
+      changed = next
+      return rules
+    })
+    if (failure === 'invalid') return { result: `Not changed:\n${problems.join('\n')}` }
+    if (failure || !changed) return { result: `Not changed: ${failure}` }
+    await trustScripts($, scriptsOf(changed))
+    await loadRules($)
+    return { result: `Changed ${changed.id}: ${describeRule(changed)}\n\n${await rulesText($)}` }
+  }).catch(() => ({ deny: 'proxy: could not write the rules file; try again.' }))
+
+  on('tool.call', { tool: 'mcp__proxy__remove_rule' }, async ($, e) => {
+    const id = String(e.id)
+    const failure = await editRules($, rules => (rules.some(rule => rule.id === id) ? rules.filter(rule => rule.id !== id) : `No rule has the id ${id}.`))
+    return { result: failure ? `Not removed: ${failure}` : `Removed ${id}.\n\n${await rulesText($)}` }
+  }).catch(() => ({ deny: 'proxy: could not write the rules file; try again.' }))
 
   on('tool.call', { tool: LIST_TOOL }, async ($, e) => {
     const filter = typeof e.filter === 'string' ? e.filter : ''

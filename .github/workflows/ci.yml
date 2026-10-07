@@ -21,3 +21,5 @@ jobs:
         run: claude plugin test .
       - name: Run the proxy's tests (openssl and curl against local upstreams)
         run: node --test sidecar/proxy.spec.mjs
+      - name: Run the rules engine's tests
+        run: node --test sidecar/rules.spec.mjs

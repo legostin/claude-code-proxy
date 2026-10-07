@@ -21,6 +21,19 @@ import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 
 import { createLeafFactory, ensureCA, mobileConfig } from './certs.mjs'
+import {
+  applyRequestRules,
+  applyResponseRules,
+  createRuleSet,
+  decodeWhole,
+  finalizeRequestRules,
+  getHeader,
+  rulesForRequest,
+  rulesForResponse,
+  setHeader,
+  throttleStream,
+  urlOf,
+} from './engine.mjs'
 import { networkAddresses } from './network.mjs'
 
 const MAGIC_HOST = 'claude.proxy'
@@ -39,6 +52,8 @@ const { values: args } = parseArgs({
     'no-decrypt': { type: 'string', default: '' },
     'max-body': { type: 'string', default: String(3 * 1024 * 1024) },
     'insecure-upstream': { type: 'boolean', default: false },
+    rules: { type: 'string' },
+    trust: { type: 'string' },
   },
 })
 
@@ -260,6 +275,7 @@ function describeUpstreamError(error) {
 
 let ca
 let leafs
+let ruleSet = null
 
 function setupPage() {
   const primary = network.find(entry => entry.isPrimary)
@@ -355,7 +371,30 @@ function handleRequest(req, res, tunnelTarget) {
   const target = resolveTarget(req, tunnelTarget)
   if (!target) return serveSelf(res, req.url ?? '/')
   if (isSelf(target.host, target.port)) return serveSelf(res, target.path)
+  exchange(req, res, target).catch(error => {
+    emit({ t: 'log', level: 'error', message: `exchange: ${error.stack ?? error.message}` })
+    if (!res.headersSent) {
+      res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
+      res.end(`Claude Code proxy failed: ${error.message}\n`)
+    } else {
+      res.destroy()
+    }
+  })
+}
 
+function readWhole(stream) {
+  return new Promise((resolveRead, rejectRead) => {
+    const chunks = []
+    stream.on('data', chunk => chunks.push(chunk))
+    stream.on('end', () => resolveRead(Buffer.concat(chunks)))
+    stream.on('error', rejectRead)
+  })
+}
+
+// One request and its response. Without a matching rule the bodies stream
+// through untouched; rules may change the request before it is sent, answer
+// it themselves, fail it, and change the response before the client gets it.
+async function exchange(req, res, target) {
   const flow = newFlow({
     method: req.method,
     scheme: target.scheme,
@@ -364,24 +403,40 @@ function handleRequest(req, res, tunnelTarget) {
     path: target.path,
     client: clientOf(req.socket),
   })
-  const reqHeaders = pairs(req.rawHeaders)
+  // the request as the server gets it: the rules work on this
+  const sent = {
+    method: req.method,
+    target: { scheme: target.scheme, host: target.host, port: target.port, path: target.path },
+    headers: pairs(req.rawHeaders),
+    body: undefined,
+    respond: null,
+    fail: null,
+    throttle: null,
+  }
   const reqBody = new Capture(maxBody)
   let resBody = null
   let resHeaders = []
   let statusMessage = null
   let isFinished = false
-
+  let upstream = null
+  const ruleLog = []
+  const abort = new AbortController()
+  const log = (ruleId, text) => {
+    ruleLog.push(`${ruleId}: ${text}`)
+    flow.rules ??= []
+    if (!flow.rules.includes(ruleId)) flow.rules.push(ruleId)
+  }
   const detail = () => ({
-    url: `${flow.scheme}://${flow.host}${(flow.scheme === 'https' && flow.port === 443) || (flow.scheme === 'http' && flow.port === 80) ? '' : `:${flow.port}`}${flow.path}`,
+    url: urlOf(sent.target),
     httpVersion: req.httpVersion,
     statusMessage,
-    reqHeaders,
+    reqHeaders: sent.headers,
     resHeaders,
+    ruleLog,
   })
 
   emitFlow(flow)
   writeDetail(flow, { ...detail(), req: null, res: null })
-
 
   const finish = async () => {
     if (isFinished) return
@@ -390,12 +445,10 @@ function handleRequest(req, res, tunnelTarget) {
     flow.reqSize = reqBody.size
     flow.resSize = resBody?.size ?? 0
     flow.state = flow.error ? 'error' : 'done'
-    const header = name => resHeaders.find(([k]) => k.toLowerCase() === name)?.[1]
-    const reqHeader = name => reqHeaders.find(([k]) => k.toLowerCase() === name)?.[1]
     const bodies = {}
     for (const [side, capture, encoding] of [
-      ['req', reqBody, reqHeader('content-encoding')],
-      ['res', resBody, header('content-encoding')],
+      ['req', reqBody, getHeader(sent.headers, 'content-encoding')],
+      ['res', resBody, getHeader(resHeaders, 'content-encoding')],
     ]) {
       if (!capture || capture.size === 0) {
         bodies[side] = null
@@ -417,72 +470,201 @@ function handleRequest(req, res, tunnelTarget) {
     emitFlow(flow)
   }
 
-  const isLocal = isLocalClient(flow.client)
-  if (!isLocal && isLoopback(target.host)) {
-    flow.error = loopbackRefusal(target.host)
-    flow.errorCode = 'forbidden'
-    res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
-    res.end(`Claude Code proxy: ${flow.error}\n`)
-    req.resume()
-    resBody = new Capture(0)
-    return void finish()
-  }
-
-  const upstream = (target.scheme === 'https' ? https : http).request({
-    host: target.host,
-    port: target.port,
-    method: req.method,
-    path: target.path,
-    headers: forwardable(req.rawHeaders),
-    agent: target.scheme === 'https' ? (isLocal ? httpsAgent : remoteHttpsAgent) : isLocal ? httpAgent : remoteHttpAgent,
-    servername: net.isIP(target.host) ? undefined : target.host,
-    ...reachFor(flow.client),
-  })
-
-  req.on('data', chunk => reqBody.push(chunk))
-  req.pipe(upstream)
-
-  upstream.on('response', upstreamRes => {
-    flow.status = upstreamRes.statusCode
-    flow.contentType = contentTypeOf(upstreamRes.headers['content-type'])
-    flow.state = 'receiving'
-    statusMessage = upstreamRes.statusMessage
-    resHeaders = pairs(upstreamRes.rawHeaders)
-    resBody = new Capture(maxBody)
-    emitFlow(flow)
-    res.writeHead(upstreamRes.statusCode, upstreamRes.statusMessage, forwardable(upstreamRes.rawHeaders))
-    upstreamRes.on('data', chunk => resBody.push(chunk))
-    upstreamRes.pipe(res)
-    upstreamRes.on('end', finish)
-    upstreamRes.on('error', error => {
-      flow.error = describeUpstreamError(error)
-      flow.errorCode = 'upstream'
-      finish()
-    })
-  })
-
-  upstream.on('error', error => {
-    const isRefused = error.code === 'ELOOPBACK'
-    flow.error = isRefused ? error.message : describeUpstreamError(error)
-    flow.errorCode = isRefused ? 'forbidden' : 'upstream'
-    if (!res.headersSent) {
-      res.writeHead(isRefused ? 403 : 502, { 'content-type': 'text/plain; charset=utf-8' })
-      res.end(`Claude Code proxy could not reach ${target.host}:${target.port}\n${flow.error}\n`)
-    } else {
-      res.destroy()
-    }
-    finish()
-  })
-
   res.on('close', () => {
     if (isFinished) return
     if (!res.writableFinished) {
+      abort.abort()
       flow.error ??= 'the client closed the connection before the response ended'
       flow.errorCode ??= 'client-closed'
-      upstream.destroy()
+      upstream?.destroy()
       finish()
     }
   })
+
+  const refuse = (status, text, code) => {
+    flow.error = text
+    flow.errorCode = code
+    res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' })
+    res.end(`Claude Code proxy: ${text}\n`)
+    req.resume()
+    resBody = new Capture(0)
+    return finish()
+  }
+
+  const fail = kind => {
+    flow.error =
+      kind === 'timeout' ? 'a rule held the request unanswered' : kind === 'reset' ? 'a rule reset the connection' : 'a rule closed the connection'
+    flow.errorCode = 'rule'
+    upstream?.destroy()
+    req.resume()
+    if (kind === 'timeout') {
+      // never answered: the client gives up first, or the proxy after five minutes
+      setTimeout(() => res.destroy(), 300_000).unref()
+      return
+    }
+    const socket = req.socket.rawSocket ?? req.socket
+    if (kind === 'reset' && typeof socket.resetAndDestroy === 'function') socket.resetAndDestroy()
+    else socket.destroy()
+  }
+
+  const isLocal = isLocalClient(flow.client)
+  if (!isLocal && isLoopback(target.host)) return refuse(403, loopbackRefusal(target.host), 'forbidden')
+
+  // --- the rules, request side
+  const view = () => ({
+    method: sent.method,
+    url: urlOf(sent.target),
+    host: sent.target.host,
+    path: sent.target.path,
+    headers: sent.headers,
+    body: sent.body === undefined ? undefined : sent.body.toString('utf8'),
+  })
+  const context = { projectRoot: ruleSet?.projectRoot ?? process.cwd(), signal: abort.signal, log }
+  const { candidates, needsBody } = rulesForRequest(ruleSet?.rules ?? [], view())
+  if (needsBody) sent.body = await readWhole(req)
+  const matched = candidates.length ? finalizeRequestRules(candidates, view()) : []
+  if (matched.length) await applyRequestRules(matched, sent, context)
+  if (abort.signal.aborted) return
+  if (sent.fail) return fail(sent.fail)
+  if (!isLocal && isLoopback(sent.target.host)) return refuse(403, loopbackRefusal(sent.target.host), 'forbidden')
+
+  // --- the response: a rule's own, or the server's
+  let response
+  if (sent.respond) {
+    if (sent.body === undefined) req.on('data', chunk => reqBody.push(chunk)).resume()
+    else reqBody.push(sent.body)
+    response = { status: sent.respond.status, statusMessage: undefined, headers: sent.respond.headers, body: sent.respond.body }
+  } else {
+    try {
+      response = await new Promise((resolveResponse, rejectResponse) => {
+        const headers = forwardable(sent.headers.flat())
+        if (sent.body !== undefined) {
+          const kept = []
+          for (let i = 0; i + 1 < headers.length; i += 2) {
+            if (!/^(content-length|transfer-encoding)$/i.test(headers[i])) kept.push(headers[i], headers[i + 1])
+          }
+          kept.push('content-length', String(sent.body.length))
+          headers.splice(0, headers.length, ...kept)
+        }
+        const isHttps = sent.target.scheme === 'https'
+        upstream = (isHttps ? https : http).request({
+          host: sent.target.host,
+          port: sent.target.port,
+          method: sent.method,
+          path: sent.target.path,
+          headers,
+          agent: isHttps ? (isLocal ? httpsAgent : remoteHttpsAgent) : isLocal ? httpAgent : remoteHttpAgent,
+          servername: net.isIP(sent.target.host) ? undefined : sent.target.host,
+          ...reachFor(flow.client),
+        })
+        upstream.on('response', upstreamRes =>
+          resolveResponse({
+            status: upstreamRes.statusCode,
+            statusMessage: upstreamRes.statusMessage,
+            headers: pairs(upstreamRes.rawHeaders),
+            stream: upstreamRes,
+          }),
+        )
+        upstream.on('error', rejectResponse)
+        if (sent.body !== undefined) {
+          reqBody.push(sent.body)
+          upstream.end(sent.body)
+        } else {
+          req.on('data', chunk => reqBody.push(chunk))
+          req.pipe(upstream)
+        }
+      })
+    } catch (error) {
+      if (abort.signal.aborted) return
+      const isRefused = error.code === 'ELOOPBACK'
+      flow.error = isRefused ? error.message : describeUpstreamError(error)
+      flow.errorCode = isRefused ? 'forbidden' : 'upstream'
+      if (!res.headersSent) {
+        res.writeHead(isRefused ? 403 : 502, { 'content-type': 'text/plain; charset=utf-8' })
+        res.end(`Claude Code proxy could not reach ${sent.target.host}:${sent.target.port}\n${flow.error}\n`)
+      } else {
+        res.destroy()
+      }
+      return finish()
+    }
+  }
+
+  // --- the rules, response side
+  statusMessage = response.statusMessage ?? null
+  const state = {
+    status: response.status,
+    statusMessage: response.statusMessage,
+    headers: response.headers,
+    body: undefined,
+    fail: null,
+    throttle: sent.throttle,
+    request: {
+      method: sent.method,
+      url: urlOf(sent.target),
+      headers: Object.fromEntries(sent.headers.map(([key, value]) => [key.toLowerCase(), value])),
+    },
+  }
+  const chosen = rulesForResponse(matched, {
+    status: response.status,
+    contentType: contentTypeOf(getHeader(response.headers, 'content-type')),
+  })
+  let responseRules = chosen.rules
+  const isWhole = chosen.needsBody || response.body !== undefined
+  if (isWhole) {
+    if (response.body !== undefined) {
+      state.body = response.body
+    } else {
+      const raw = await readWhole(response.stream)
+      const decoded = decodeWhole(raw, getHeader(response.headers, 'content-encoding'))
+      if (decoded === null) {
+        // a body we cannot read is passed on as it came, untouched
+        state.body = raw
+        responseRules = responseRules.map(rule => ({ ...rule, response: rule.response.filter(action => !['setBody', 'replaceBody', 'mergeJson', 'script'].includes(action.type)) }))
+        log(responseRules[0]?.id ?? 'rules', `could not decode the ${getHeader(response.headers, 'content-encoding')} body: body actions skipped`)
+      } else {
+        state.body = decoded
+        setHeader(state.headers, 'content-encoding', undefined)
+      }
+    }
+  }
+  if (responseRules.length) await applyResponseRules(responseRules, state, context)
+  if (abort.signal.aborted) return response.stream?.destroy()
+  if (state.fail) {
+    response.stream?.destroy()
+    return fail(state.fail)
+  }
+
+  flow.status = state.status
+  flow.contentType = contentTypeOf(getHeader(state.headers, 'content-type'))
+  flow.state = 'receiving'
+  statusMessage = state.statusMessage ?? null
+  resHeaders = state.headers
+  resBody = new Capture(maxBody)
+  emitFlow(flow)
+
+  if (isWhole) {
+    // the body is whole now, so its length is known
+    setHeader(state.headers, 'transfer-encoding', undefined)
+    setHeader(state.headers, 'content-length', String(state.body.length))
+  }
+  res.writeHead(state.status, state.statusMessage ?? undefined, forwardable(state.headers.flat()))
+  res.once('finish', finish)
+  const out = state.throttle ? throttleStream(state.throttle) : null
+  if (out) out.pipe(res)
+  const sink = out ?? res
+  if (isWhole) {
+    resBody.push(state.body)
+    sink.end(state.body)
+  } else {
+    response.stream.on('data', chunk => resBody.push(chunk))
+    response.stream.pipe(sink)
+    response.stream.on('error', error => {
+      flow.error = describeUpstreamError(error)
+      flow.errorCode = 'upstream'
+      res.destroy()
+      finish()
+    })
+  }
 }
 
 // --- WebSocket and other upgrades: passed through, one row each ------------
@@ -673,6 +855,8 @@ async function decrypt(rawSocket, host, port) {
       ),
   })
   secure.proxyTarget = { scheme: 'https', host, port }
+  // a rule that resets the connection resets the TCP socket beneath the TLS one
+  secure.rawSocket = rawSocket
   let isSecure = false
   let isReported = false
   secure.once('secure', () => {
@@ -729,6 +913,13 @@ async function main() {
     return fatal('ca', error.message)
   }
   leafs = createLeafFactory(ca)
+  if (args.rules) {
+    ruleSet = createRuleSet({
+      rulesFile: args.rules,
+      trustFile: args.trust ?? join(args.data, 'trusted-scripts.json'),
+      onLoad: loaded => emit({ t: 'rules', ...loaded }),
+    })
+  }
   await mkdir(runDir, { recursive: true })
   cleanOldRuns()
 
