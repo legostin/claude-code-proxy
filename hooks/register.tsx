@@ -528,7 +528,7 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
   const open = (id: number) => update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'detail', selectedId: id }))
   const toggleNode = (id: string) =>
     update($, expandedAtom, list => ((list ?? []).includes(id) ? (list ?? []).filter(x => x !== id) : [...(list ?? []), id]))
-  const setLayout = (layout: 'list' | 'tree') => update($, viewAtom, (v): ProxyView => ({ ...v, layout }))
+  const setLayout = (layout: 'list' | 'tree') => chooseLayout($, layout)
 
   const flowCells = (flow: ProxyFlow, label: string, labelWidth: number) => [
     <Text color={statusColor(flow)}>{statusLabel(flow).padEnd(4)} </Text>,
@@ -544,38 +544,45 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
 
   return (
     <Box flexDirection="column">
-      <Box flexDirection="row" justifyContent="space-between">
-        <Text bold color={status.phase === 'running' ? 'success' : status.phase === 'failed' ? 'error' : 'subtle'}>
-          {truncate(phaseLine(status, flows.length, shown.length, parsed.terms.length > 0), Math.max(10, width - 40))}
-        </Text>
-        <Box flexDirection="row" gap={1}>
-          <Button
-            key="toggle"
-            hotkey="s"
-            variant={isRunning ? undefined : 'primary'}
-            label={isRunning ? 'Stop' : 'Start'}
-            onPress={() => void (isRunning ? stopProxy($) : startProxy($, options))}
-          />
-          <Button
-            key="layout"
-            hotkey="t"
-            label={isTree ? 'List' : 'Tree'}
-            onPress={() => void setLayout(isTree ? 'list' : 'tree')}
-          />
-          {isTree ? (
-            <Button key="expand-all" hotkey="e" label="Expand all" onPress={() => void update($, expandedAtom, () => treeIds(tree))} />
-          ) : null}
-          {isTree ? (
-            <Button key="collapse-all" hotkey="c" label="Collapse all" onPress={() => void update($, expandedAtom, () => [])} />
-          ) : null}
-          <Button key="clear" hotkey="x" label="Clear" onPress={() => void clearFlows($)} />
-          <Button
-            key="setup"
-            hotkey="n"
-            label="Setup"
-            onPress={() => void update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'setup' }))}
-          />
-        </Box>
+      <Text bold color={status.phase === 'running' ? 'success' : status.phase === 'failed' ? 'error' : 'subtle'}>
+        {truncate(phaseLine(status, flows.length, shown.length, parsed.terms.length > 0), width)}
+      </Text>
+      <Box flexDirection="row" gap={1} flexWrap="wrap">
+        <Button
+          key="toggle"
+          hotkey="s"
+          variant={isRunning ? undefined : 'primary'}
+          label={isRunning ? 'Stop' : 'Start'}
+          onPress={() => void (isRunning ? stopProxy($) : startProxy($, options))}
+        />
+        <Text dimColor>View</Text>
+        <Button
+          key="layout-list"
+          hotkey="l"
+          variant={isTree ? undefined : 'primary'}
+          label="List"
+          onPress={() => void setLayout('list')}
+        />
+        <Button
+          key="layout-tree"
+          hotkey="t"
+          variant={isTree ? 'primary' : undefined}
+          label="Tree"
+          onPress={() => void setLayout('tree')}
+        />
+        {isTree ? (
+          <Button key="expand-all" hotkey="e" label="Expand all" onPress={() => void update($, expandedAtom, () => treeIds(tree))} />
+        ) : null}
+        {isTree ? (
+          <Button key="collapse-all" hotkey="c" label="Collapse all" onPress={() => void update($, expandedAtom, () => [])} />
+        ) : null}
+        <Button key="clear" hotkey="x" label="Clear" onPress={() => void clearFlows($)} />
+        <Button
+          key="setup"
+          hotkey="n"
+          label="Setup"
+          onPress={() => void update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'setup' }))}
+        />
       </Box>
       {status.error ? <Text color="error">{status.error}</Text> : null}
       {Input ? (
@@ -986,6 +993,12 @@ async function statusText($: EngineInterface): Promise<string> {
   }
 }
 
+/** Shows the list or the tree, and remembers the choice for later sessions. */
+async function chooseLayout($: EngineInterface, layout: 'list' | 'tree'): Promise<void> {
+  await update($, viewAtom, (v): ProxyView => ({ ...v, mode: v?.mode === 'detail' ? 'list' : (v?.mode ?? 'list'), layout }))
+  await $.store.set('layout', layout).catch(() => undefined)
+}
+
 async function openPane($: EngineInterface): Promise<void> {
   const opened = await $.ui.open({ id: PANE, title: 'Proxy', focus: true })
   if (!opened.isPlaced) $.ui.toast('proxy: the pane is waiting for room; widen the terminal')
@@ -999,7 +1012,7 @@ export const register: Register = (on, raw) => {
     await $.command.register({
       name: 'proxy',
       description: 'HTTPS proxy: captured requests, filter, and setup for a browser, iOS and Android',
-      argumentHint: '[start|stop|clear|setup|status]',
+      argumentHint: '[start|stop|clear|setup|status|tree|list]',
     })
     await $.tool.register({
       name: 'list_requests',
@@ -1029,6 +1042,10 @@ export const register: Register = (on, raw) => {
         required: ['id'],
       },
     })
+    const remembered = await $.store.get('layout').catch(() => undefined)
+    if (remembered === 'tree' || remembered === 'list') {
+      await update($, viewAtom, (v): ProxyView => ({ ...v, layout: remembered }))
+    }
     // A reload of the module took the sidecar with it; bring it back.
     if (await read($, wantedAtom)) await startProxy($, options)
     return started
@@ -1056,6 +1073,12 @@ export const register: Register = (on, raw) => {
         return { text: 'The request list is cleared.' }
       case 'status':
         return { text: await statusText($) }
+      case 'tree':
+      case 'list':
+        await chooseLayout($, arg)
+        await update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'list' }))
+        await openPane($)
+        return { text: `The Proxy pane shows the requests as a ${arg}.` }
       case 'setup':
         await update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'setup' }))
         await openPane($)
@@ -1065,7 +1088,7 @@ export const register: Register = (on, raw) => {
         await startProxy($, options)
         return { text: 'The Proxy pane is open.' }
       default:
-        return { text: `Unknown "${arg}". /proxy [start|stop|clear|setup|status]` }
+        return { text: `Unknown "${arg}". /proxy [start|stop|clear|setup|status|tree|list]` }
     }
   })
 

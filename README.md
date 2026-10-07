@@ -14,7 +14,7 @@ looks at the real request and response.
 [Website](https://legostin.github.io/claude-code-proxy/) · [Install](#install) · [Design notes](docs/design.md)
 
 ```
-● 127.0.0.1:8899 · 342 requests              [ Stop ] [ Tree ] [ Clear ] [ Setup ]
+● 127.0.0.1:8899 · 342 requests              [ Stop ]  View [ List ] [ Tree ]  [ Clear ] [ Setup ]
 Filter host:*.api.example.com is:error
 401  POST    https://api.example.com/v1/login                     1.2KB   180ms
 503  GET     https://api.example.com/v1/feed                        87B    2.1s
@@ -42,6 +42,7 @@ work:
   WebSocket upgrades and server-sent events pass through.
 - Request list with a filter language: `method:POST status:4xx host:*.example.com type:json is:error -text`.
 - A tree view: requests grouped by host and path, each node with its request and failure counts.
+  Switch with **View: List / Tree** in the pane (`l` / `t`) or `/proxy tree`; the choice is remembered.
 - The exact proxy address for each client: the Mac's Wi-Fi address for a phone, picked over VPN tunnels and
   virtual machine bridges, and a QR code the phone scans to open the setup page and get the certificate.
 - Request detail: headers, pretty-printed JSON, gzip, brotli, deflate and zstd decoded,
@@ -72,6 +73,8 @@ Answer `y` to add the marketplace and pick a scope. Then:
 /proxy stop       stop it (and point Android devices back)
 /proxy clear      clear the list
 /proxy status     one line about its state
+/proxy tree       show the requests as a tree (host → path → requests)
+/proxy list       show them as a flat list
 ```
 
 ## Set up a client

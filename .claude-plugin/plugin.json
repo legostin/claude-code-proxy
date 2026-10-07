@@ -1,6 +1,6 @@
 {
   "name": "proxy",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "An HTTPS debugging proxy inside Claude Code: intercepts browser, iOS and Android traffic with its own CA, setup guides, a filterable request list and tools for Claude.",
   "author": {
     "name": "Legostin Vyacheslav",

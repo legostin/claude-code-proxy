@@ -77,6 +77,7 @@ function fakeMachine(on: On, clock: MockClock) {
   const killed: string[] = []
   let isKilled = false
   mock.env(on, { HOME })
+  mock.store(on)
   on('process.spawn', async function* ($, e) {
     spawned.push(e.argv)
     const text = [READY, ...FLOWS.map(f => ({ t: 'flow', flow: f }))].map(event => `${JSON.stringify(event)}\n`).join('')
@@ -246,7 +247,10 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
     await ui.press({ key: 'toggle' })
     await clock.advance(250)
-    await ui.press({ key: 'layout' })
+    expect((await ui.find({ key: 'layout-list' }))?.props.variant).toBe('primary')
+    await ui.press({ key: 'layout-tree' })
+    expect((await ui.find({ key: 'layout-tree' }))?.props.variant).toBe('primary')
+    expect((await ui.find({ key: 'layout-list' }))?.props.variant).toBeUndefined()
 
     const api = 'node:o:https://api.example.com'
     expect((await ui.find({ key: api }))?.text).toBe('▸ https://api.example.com')
@@ -266,7 +270,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     for (const id of [1, 2, 3]) expect(await ui.find({ key: `open-${id}` })).toBeDefined()
     await ui.press({ key: 'collapse-all' })
     expect(await ui.find({ key: 'open-1' })).toBeUndefined()
-    await ui.press({ key: 'layout' })
+    await ui.press({ key: 'layout-list' })
     expect((await ui.find({ key: 'open-1' }))?.text).toBe('https://api.example.com/v1/items/1')
     await ui.press({ key: 'toggle' })
     await clock.advance(200)
