@@ -139,7 +139,7 @@
   </header>
 
   <div class="pane" role="img" aria-label="The proxy pane: a request list with a filter">
-    <div class="head"><span class="live">● 127.0.0.1:8899 · 342 requests</span><span class="btns">[ Stop ] [ Clear ] [ Setup ]</span></div>
+    <div class="head"><span class="live">● 127.0.0.1:8899 · 342 requests</span><span class="btns">[ Stop ] [ Tree ] [ Clear ] [ Setup ]</span></div>
     <div class="filter">Filter <b>host:*.example.com is:error</b></div>
     <div class="row"><span class="s4">401 </span> POST    https://api.example.com/v1/login            <span class="dim">1.2KB   180ms</span></div>
     <div class="row"><span class="s5">503 </span> GET     https://api.example.com/v1/feed               <span class="dim">87B    2.1s</span></div>
@@ -159,6 +159,8 @@
   <ul>
     <li>MITM HTTPS proxy with per-host certificates from a CA made on your machine; plain HTTP, WebSocket upgrades and server-sent events pass through.</li>
     <li>A filter language: <code>method:POST status:4xx host:*.example.com type:json is:error -text</code>.</li>
+    <li>A tree view: requests grouped by host and path, with request and failure counts on every node.</li>
+    <li>The exact proxy address for each client, the Mac's Wi-Fi address picked over VPN tunnels and VM bridges, and a QR code a phone scans to get the certificate.</li>
     <li>Request detail with pretty-printed JSON and gzip, brotli, deflate and zstd decoded; <strong>Copy as curl</strong> and <strong>To prompt</strong>.</li>
     <li>Certificate trouble made visible: a client that refuses the proxy certificate, because the CA is not trusted or the app pins certificates, shows up as a <code>CERT</code> row.</li>
     <li>A setup page served by the proxy at <code>http://claude.proxy/</code> with an iOS <code>.mobileconfig</code>, an Android <code>.crt</code> and a <code>.pem</code>.</li>
@@ -172,9 +174,9 @@
     <tr><th>Client</th><th>How</th></tr>
     <tr><td>A separate browser</td><td><strong>Setup → Browser → Open Google Chrome</strong> (or Edge, Brave, Chromium): its own profile, <code>--proxy-server</code>, localhost captured, and trust by SPKI hash instead of a keychain entry.</td></tr>
     <tr><td>iOS Simulator</td><td><strong>CA → simulators</strong> adds the CA to every booted simulator; the tab copies the <code>networksetup</code> commands for the macOS system proxy the simulator uses.</td></tr>
-    <tr><td>iPhone / iPad</td><td>Listen on <code>lan</code>, set the Wi-Fi proxy, open <code>http://claude.proxy/</code>, install the profile, trust the certificate.</td></tr>
+    <tr><td>iPhone / iPad</td><td><strong>Listen on LAN</strong>, scan the QR code to install the profile, trust it, set the Wi-Fi proxy to the address the tab shows.</td></tr>
     <tr><td>Android emulator / USB phone</td><td><strong>Android → proxy</strong>: <code>10.0.2.2:8899</code> for an emulator, <code>adb reverse</code> for USB; reverted when the proxy stops.</td></tr>
-    <tr><td>Android phone on Wi-Fi</td><td>Listen on <code>lan</code>, set the Wi-Fi proxy, install the CA; apps need a <code>network_security_config</code>, which the tab copies.</td></tr>
+    <tr><td>Android phone on Wi-Fi</td><td><strong>Listen on LAN</strong>, scan the QR code to get the certificate, set the Wi-Fi proxy; apps need a <code>network_security_config</code>, which the tab copies.</td></tr>
     <tr><td>curl, Node, Python, Go</td><td><code>HTTPS_PROXY</code>, <code>NODE_EXTRA_CA_CERTS</code>, <code>SSL_CERT_FILE</code>, <code>REQUESTS_CA_BUNDLE</code>, copied from the macOS / CLI tab.</td></tr>
   </table>
   </div>

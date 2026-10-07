@@ -27,6 +27,15 @@ export type ProxyCa = {
   spki: string[]
 }
 
+/** One of this machine's addresses, as the sidecar ranks them for a phone. */
+export type ProxyAddress = {
+  address: string
+  iface: string
+  label: string
+  kind: 'lan' | 'vpn' | 'virtual'
+  isPrimary: boolean
+}
+
 export type ProxyPhase = 'stopped' | 'starting' | 'running' | 'failed'
 
 export type ProxyStatus = {
@@ -34,6 +43,7 @@ export type ProxyStatus = {
   host: string
   port: number
   addresses: string[]
+  lan: ProxyAddress[]
   runDir: string | null
   pid: number | null
   ca: ProxyCa | null
@@ -46,6 +56,7 @@ export type ProxyView = {
   mode: 'list' | 'detail' | 'setup'
   selectedId: number | null
   setupTab: ProxySetupTab
+  layout?: 'list' | 'tree'
 }
 
 declare module 'claude-code' {
@@ -59,6 +70,7 @@ declare module 'claude-code' {
       nextId: number
       notice: string
       emulators: string[]
+      expanded: string[]
     }
   }
 }

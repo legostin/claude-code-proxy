@@ -21,6 +21,7 @@ import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 
 import { createLeafFactory, ensureCA, mobileConfig } from './certs.mjs'
+import { networkAddresses } from './network.mjs'
 
 const MAGIC_HOST = 'claude.proxy'
 const HOP_BY_HOP = new Set([
@@ -61,7 +62,12 @@ function fatal(code, message) {
   process.stdout.write(`${JSON.stringify({ t: 'fatal', code, message })}\n`, () => process.exit(3))
 }
 
+// This machine's addresses, best for a phone first (network.mjs); refreshed
+// while running so a change of Wi-Fi reaches the mod as a `network` event.
+let network = []
+
 function lanAddresses() {
+  if (network.length) return network.map(entry => entry.address)
   return Object.values(os.networkInterfaces())
     .flat()
     .filter(a => a && a.family === 'IPv4' && !a.internal)
@@ -256,8 +262,10 @@ let ca
 let leafs
 
 function setupPage() {
-  const addresses = [...lanAddresses(), '127.0.0.1']
-  const links = addresses.map(a => `<code>http://${a}:${listenPort}/</code>`).join(' · ')
+  const primary = network.find(entry => entry.isPrimary)
+  const links = primary
+    ? `<b>${primary.address}</b> port <b>${listenPort}</b> <small>(${primary.label})</small>`
+    : `<code>127.0.0.1:${listenPort}</code>`
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Claude Code Proxy</title>
@@ -732,6 +740,15 @@ async function main() {
   server.on('error', error =>
     fatal(error.code === 'EADDRINUSE' ? 'port-busy' : 'listen', `${args.host}:${args.port}: ${error.message}`),
   )
+  network = await networkAddresses().catch(() => [])
+  setInterval(async () => {
+    const now = await networkAddresses().catch(() => network)
+    if (JSON.stringify(now) !== JSON.stringify(network)) {
+      network = now
+      emit({ t: 'network', lan: network })
+    }
+  }, 10_000).unref()
+
   server.listen(Number(args.port), args.host, () => {
     listenPort = server.address().port
     emit({
@@ -739,6 +756,7 @@ async function main() {
       host: args.host,
       port: listenPort,
       addresses: args.host === '127.0.0.1' || args.host === 'localhost' ? ['127.0.0.1'] : lanAddresses(),
+      lan: network,
       pid: process.pid,
       runDir,
       ca: {

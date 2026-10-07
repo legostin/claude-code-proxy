@@ -1,7 +1,7 @@
 // Pure logic shared by the pane and the tools: the sidecar's line protocol,
 // the flow list, the filter language and the formats.
 
-import type { ProxyCa, ProxyFlow } from '../types'
+import type { ProxyAddress, ProxyCa, ProxyFlow } from '../types'
 
 export type SidecarEvent =
   | {
@@ -9,11 +9,13 @@ export type SidecarEvent =
       host: string
       port: number
       addresses: string[]
+      lan?: ProxyAddress[]
       pid: number
       runDir: string
       ca: ProxyCa
     }
   | { t: 'flow'; flow: ProxyFlow }
+  | { t: 'network'; lan: ProxyAddress[] }
   | { t: 'fatal'; code: string; message: string }
   | { t: 'log'; level: string; message: string }
 
@@ -328,4 +330,99 @@ export function clip(text: string, maxLines: number, maxChars: number): { text: 
   const lines = out.split('\n')
   if (lines.length > maxLines) out = lines.slice(0, maxLines).join('\n')
   return { text: out, isClipped: out.length < text.length }
+}
+
+// --- the tree view ---------------------------------------------------------------
+//
+// Requests grouped by origin, then by path segment, the way a file tree groups
+// files: `https://api.example.com` → `/v1` → `/items`. A node with no requests
+// of its own and one child is folded into it (`/v1/items`). Origins and
+// segments sort by name so the tree holds still while traffic flows; the
+// requests under a node are newest first.
+
+export type TreeNode = {
+  /** Stable across redraws: what the expanded set holds. */
+  id: string
+  label: string
+  /** Requests under this node, its descendants' included. */
+  count: number
+  /** Of those, the ones that failed (isFailure). */
+  errors: number
+  children: TreeNode[]
+  /** Requests to exactly this path, newest first. */
+  flows: ProxyFlow[]
+}
+
+export type TreeRow =
+  | { kind: 'node'; node: TreeNode; depth: number; isOpen: boolean }
+  | { kind: 'flow'; flow: ProxyFlow; depth: number }
+
+function originOf(flow: ProxyFlow): string {
+  if (flow.kind === 'tunnel') return `${flow.host}:${flow.port}`
+  return flowUrl({ ...flow, kind: 'http', path: '' })
+}
+
+type Building = { id: string; label: string; children: Map<string, Building>; flows: ProxyFlow[] }
+
+function finish(node: Building): TreeNode {
+  const children = [...node.children.values()].map(finish).sort((a, b) => a.label.localeCompare(b.label))
+  const flows = [...node.flows].sort((a, b) => b.id - a.id)
+  // a path segment with no requests of its own and one child folds into it
+  if (node.id.startsWith('p:') && flows.length === 0 && children.length === 1) {
+    const only = children[0]!
+    return { ...only, label: `${node.label}${only.label}` }
+  }
+  const count = flows.length + children.reduce((sum, child) => sum + child.count, 0)
+  const errors = flows.filter(isFailure).length + children.reduce((sum, child) => sum + child.errors, 0)
+  return { id: node.id, label: node.label, count, errors, children, flows }
+}
+
+export function buildTree(flows: readonly ProxyFlow[]): TreeNode[] {
+  const origins = new Map<string, Building>()
+  for (const flow of flows) {
+    const origin = originOf(flow)
+    let node = origins.get(origin)
+    if (!node) {
+      node = { id: `o:${origin}`, label: origin, children: new Map(), flows: [] }
+      origins.set(origin, node)
+    }
+    const segments = flow.kind === 'tunnel' ? [] : flow.path.split('?')[0]!.split('/').filter(Boolean)
+    let at = node
+    let prefix = origin
+    for (const segment of segments) {
+      prefix = `${prefix}/${segment}`
+      let child = at.children.get(segment)
+      if (!child) {
+        child = { id: `p:${prefix}`, label: `/${segment}`, children: new Map(), flows: [] }
+        at.children.set(segment, child)
+      }
+      at = child
+    }
+    at.flows.push(flow)
+  }
+  return [...origins.values()].map(finish).sort((a, b) => a.label.localeCompare(b.label))
+}
+
+/** The rows to draw: open nodes show their child nodes, then their requests. */
+export function flattenTree(nodes: readonly TreeNode[], expanded: ReadonlySet<string>, depth = 0): TreeRow[] {
+  const rows: TreeRow[] = []
+  for (const node of nodes) {
+    const isOpen = expanded.has(node.id)
+    rows.push({ kind: 'node', node, depth, isOpen })
+    if (!isOpen) continue
+    rows.push(...flattenTree(node.children, expanded, depth + 1))
+    for (const flow of node.flows) rows.push({ kind: 'flow', flow, depth: depth + 1 })
+  }
+  return rows
+}
+
+/** Every node id in the tree: what "expand all" opens. */
+export function treeIds(nodes: readonly TreeNode[]): string[] {
+  return nodes.flatMap(node => [node.id, ...treeIds(node.children)])
+}
+
+/** What a request row in the tree says after its status and method. */
+export function treeLeafLabel(flow: ProxyFlow): string {
+  const query = flow.path.includes('?') ? `?${flow.path.split('?').slice(1).join('?')}` : ''
+  return `#${flow.id}${query ? ` ${query}` : ''}`
 }

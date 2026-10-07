@@ -1,6 +1,6 @@
 // What the setup tabs say and the commands they copy or run.
 
-import type { ProxySetupTab, ProxyStatus } from '../types'
+import type { ProxyAddress, ProxySetupTab, ProxyStatus } from '../types'
 
 export const MAGIC_HOST = 'claude.proxy'
 
@@ -32,9 +32,56 @@ function proxyAddress(status: ProxyStatus): string {
   return `127.0.0.1:${status.port}`
 }
 
-function lanAddress(facts: SetupFacts): string | null {
-  const ip = facts.status.addresses.find(a => a !== '127.0.0.1')
-  return ip ? `${ip}:${facts.status.port}` : null
+/** The address a phone on the same network enters as its proxy server. */
+export function phoneAddress(facts: SetupFacts): ProxyAddress | null {
+  return facts.status.lan.find(entry => entry.isPrimary) ?? null
+}
+
+/** One client of a tab and exactly what goes into its proxy settings. */
+export type ProxyTarget = {
+  client: string
+  /** What to enter as the server; null when this Mac has no address for it. */
+  host: string | null
+  port: number
+  /** Where it goes, or what sets it. */
+  how: string
+  /** Reached over the network: needs Listen on = lan. */
+  isRemote: boolean
+}
+
+export function proxyTargets(facts: SetupFacts, tab: ProxySetupTab): ProxyTarget[] {
+  const port = facts.status.port
+  const phone = phoneAddress(facts)?.address ?? null
+  switch (tab) {
+    case 'browser':
+      return [{ client: 'Separate browser', host: '127.0.0.1', port, how: 'set by the Open button', isRemote: false }]
+    case 'ios':
+      return [
+        { client: 'iOS Simulator', host: '127.0.0.1', port, how: 'macOS system proxy ("system proxy on")', isRemote: false },
+        { client: 'iPhone / iPad', host: phone, port, how: 'Wi-Fi → (i) → Configure Proxy → Manual', isRemote: true },
+      ]
+    case 'android':
+      return [
+        { client: 'Android emulator', host: '10.0.2.2', port, how: 'set by "Android → proxy"', isRemote: false },
+        { client: 'Android on USB', host: '127.0.0.1', port, how: 'set by "Android → proxy" (adb reverse)', isRemote: false },
+        { client: 'Android on Wi-Fi', host: phone, port, how: 'Wi-Fi → Modify → Proxy: Manual', isRemote: true },
+      ]
+    default:
+      return [{ client: 'curl, scripts, system proxy', host: '127.0.0.1', port, how: 'HTTPS_PROXY / -x / networksetup', isRemote: false }]
+  }
+}
+
+/** What the phone steps say before step 1 when the phone cannot reach the proxy yet. */
+function phonePreface(facts: SetupFacts): string {
+  const phone = phoneAddress(facts)
+  if (!phone) {
+    return facts.status.lan.length === 0 && facts.status.phase !== 'running'
+      ? 'Start the proxy to find the address the phone should use.\n\n'
+      : 'This Mac has no address a phone could reach: connect it to Wi-Fi or Ethernet, on the same network as the phone.\n\n'
+  }
+  return facts.listen === 'lan'
+    ? ''
+    : 'First turn on **Listen on LAN** (the button above): the proxy listens on this Mac only now, so the phone cannot reach it.\n\n'
 }
 
 export function browserArgs(facts: SetupFacts, browser: Browser): string[] {
@@ -132,20 +179,21 @@ View Certificates → Authorities → Import (\`${facts.status.ca?.path ?? 'ca.p
 }
 
 export function iosGuide(facts: SetupFacts): string {
-  const lan = lanAddress(facts)
-  const device =
-    facts.listen === 'lan' && lan
-      ? `1. On the iPhone: **Settings → Wi-Fi → (i) next to the network → Configure Proxy → Manual**:
-   server \`${lan.split(':')[0]}\`, port \`${facts.status.port}\`. The Mac and the iPhone must be on the same network.
-2. In **Safari** open \`http://${MAGIC_HOST}/\` (or \`http://${lan}/\`) → "iOS: download profile" → Allow.
-3. **Settings → Profile Downloaded → Install** (the profile is unsigned; that is expected).
-4. **Settings → General → About → Certificate Trust Settings** → turn on "${caName(facts)}".
-5. Done. Rows marked **CERT** in the list mean step 4 is missing or the app pins its certificates;
+  const phone = phoneAddress(facts)
+  const device = !phone
+    ? phonePreface(facts)
+    : `${phonePreface(facts)}The iPhone must be on the same network as this Mac's ${phone.label}.
+
+1. **Scan the QR code above** with the Camera app (or open \`http://${phone.address}:${facts.status.port}/\` in Safari)
+   → "iOS: download profile" → Allow. This page needs no proxy setting yet.
+2. **Settings → Profile Downloaded → Install** (the profile is unsigned; that is expected).
+3. **Settings → General → About → Certificate Trust Settings** → turn on "${caName(facts)}".
+4. **Settings → Wi-Fi → (i) next to the network → Configure Proxy → Manual**:
+   Server \`${phone.address}\`, Port \`${facts.status.port}\`, Authentication off.
+5. Done. Rows marked **CERT** in the list mean step 3 is missing or the app pins its certificates;
    such hosts can go into the "Hosts not to decrypt" option.
 
 When you are done, set **Configure Proxy → Off** again, or the iPhone loses its network once the proxy stops.`
-      : `An iPhone needs the proxy to listen on the network: open \`/config\`, set the mod's **Listen on** option to **lan**, and restart the proxy.
-It listens on this Mac only now (\`${proxyAddress(facts.status)}\`).`
   return `### iOS Simulator
 
 1. **"CA → simulators"** below adds the root certificate to every **booted** simulator
@@ -160,16 +208,19 @@ ${device}`
 }
 
 export function androidGuide(facts: SetupFacts): string {
-  const lan = lanAddress(facts)
-  const device =
-    facts.listen === 'lan' && lan
-      ? `1. **Settings → Wi-Fi → long-press the network → Modify → Advanced → Proxy: Manual**:
-   host \`${lan.split(':')[0]}\`, port \`${facts.status.port}\`.
-2. In Chrome on the phone open \`http://${MAGIC_HOST}/\` → "Android: download certificate".
-3. **Settings → Security → Encryption & credentials → Install a certificate → CA certificate** → pick the downloaded file.
-4. When you are done, set **Proxy: None** again.`
-      : `A phone over Wi-Fi needs the proxy to listen on the network: \`/config\` → the mod's **Listen on** option → **lan**, then restart the proxy.
-A phone on USB does not: "Android → proxy" reaches it through \`adb reverse\`.`
+  const phone = phoneAddress(facts)
+  const device = !phone
+    ? phonePreface(facts)
+    : `${phonePreface(facts)}The phone must be on the same network as this Mac's ${phone.label}.
+
+1. **Scan the QR code above** with the camera (or open \`http://${phone.address}:${facts.status.port}/\` in Chrome)
+   → "Android: download certificate". This page needs no proxy setting yet.
+2. **Settings → Security → Encryption & credentials → Install a certificate → CA certificate** → pick the downloaded file.
+3. **Settings → Wi-Fi → long-press the network → Modify → Advanced → Proxy: Manual**:
+   Hostname \`${phone.address}\`, Port \`${facts.status.port}\`.
+4. When you are done, set **Proxy: None** again.
+
+A phone on USB needs none of this: "Android → proxy" reaches it through \`adb reverse\`.`
   return `### Android emulator and USB devices
 
 1. **"Android → proxy"** points every device \`adb devices\` lists at the proxy: an emulator at

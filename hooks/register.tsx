@@ -3,9 +3,11 @@ import type { EngineInterface, Register, RenderElement, RenderInput } from 'clau
 
 import type { ProxyFlow, ProxySetupTab, ProxyStatus, ProxyView } from '../types'
 import {
+  buildTree,
   clip,
   type FlowDetail,
   filterFlows,
+  flattenTree,
   flowTable,
   flowUrl,
   formatDuration,
@@ -19,8 +21,11 @@ import {
   splitLines,
   statusLabel,
   toCurl,
+  treeIds,
+  treeLeafLabel,
   truncate,
 } from './flows'
+import { encodeQr, qrRaster, qrSvg } from './qr'
 import {
   androidGuide,
   BROWSER_CANDIDATES,
@@ -29,6 +34,8 @@ import {
   browserGuide,
   cliGuide,
   iosGuide,
+  phoneAddress,
+  proxyTargets,
   SETUP_TABS,
   type SetupFacts,
   setupCommands,
@@ -45,6 +52,7 @@ const STOPPED: ProxyStatus = {
   host: '127.0.0.1',
   port: 8899,
   addresses: [],
+  lan: [],
   runDir: null,
   pid: null,
   ca: null,
@@ -57,6 +65,7 @@ const viewAtom = atom({ plugin: 'proxy', key: 'view' } as const, {
   mode: 'list',
   selectedId: null,
   setupTab: 'browser',
+  layout: 'list',
 } as ProxyView)
 const filterAtom = atom({ plugin: 'proxy', key: 'filter' } as const, '')
 const wantedAtom = atom({ plugin: 'proxy', key: 'wanted' } as const, false)
@@ -64,6 +73,8 @@ const nextIdAtom = atom({ plugin: 'proxy', key: 'nextId' } as const, 1)
 const noticeAtom = atom({ plugin: 'proxy', key: 'notice' } as const, '')
 /** Emulators this session pointed at the proxy, to point back on stop. */
 const emulatorsAtom = atom({ plugin: 'proxy', key: 'emulators' } as const, [] as string[])
+/** The tree view's open nodes, by TreeNode id. */
+const expandedAtom = atom({ plugin: 'proxy', key: 'expanded' } as const, [] as string[])
 
 // Every function that takes `$` lives in this file: the engine follows `$`
 // into functions of the hooks module itself, never across an import.
@@ -167,7 +178,7 @@ async function startProxy($: EngineInterface, options: Options): Promise<void> {
 
   const host = options.listen === 'lan' ? '0.0.0.0' : '127.0.0.1'
   await update($, wantedAtom, () => true)
-  await update($, statusAtom, (): ProxyStatus => ({ ...STOPPED, phase: 'starting', host, port: options.port }))
+  await update($, statusAtom, (s): ProxyStatus => ({ ...STOPPED, lan: s?.lan ?? [], phase: 'starting', host, port: options.port }))
   await showStatus($)
 
   const stream = $.process.spawn({
@@ -208,12 +219,16 @@ async function startProxy($: EngineInterface, options: Options): Promise<void> {
               host: event.host,
               port: event.port,
               addresses: event.addresses,
+              lan: event.lan ?? [],
               runDir: event.runDir,
               pid: event.pid,
               ca: event.ca,
               error: null,
             }))
             await showStatus($)
+          } else if (event.t === 'network') {
+            // the Mac joined another network: the phone's address changed
+            await update($, statusAtom, (s): ProxyStatus => ({ ...(s ?? STOPPED), lan: event.lan }))
           } else if (event.t === 'flow') {
             rt.pending.set(event.flow.id, event.flow)
             scheduleFlush($, rt, options)
@@ -501,11 +516,31 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
   const parsed = parseFilter(query)
   const shown = filterFlows(flows, query).reverse()
   const isRunning = status.phase === 'running' || status.phase === 'starting'
+  const view = await read($, viewAtom)
+  const isTree = view.layout === 'tree'
+  const expanded = await read($, expandedAtom)
+  const tree = isTree ? buildTree(filterFlows(flows, query)) : []
+  const treeRows = isTree ? flattenTree(tree, new Set(expanded)) : []
   const width = Math.max(30, e.props.bodyColumns)
   // status 4 + method 7 + gaps; size and time on the right
   const urlWidth = Math.max(12, width - 4 - 1 - 7 - 1 - 17)
 
   const open = (id: number) => update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'detail', selectedId: id }))
+  const toggleNode = (id: string) =>
+    update($, expandedAtom, list => ((list ?? []).includes(id) ? (list ?? []).filter(x => x !== id) : [...(list ?? []), id]))
+  const setLayout = (layout: 'list' | 'tree') => update($, viewAtom, (v): ProxyView => ({ ...v, layout }))
+
+  const flowCells = (flow: ProxyFlow, label: string, labelWidth: number) => [
+    <Text color={statusColor(flow)}>{statusLabel(flow).padEnd(4)} </Text>,
+    <Text bold>{flow.method.slice(0, 7).padEnd(7)} </Text>,
+    <Box flexGrow={1}>
+      <Button plain key={`open-${flow.id}`} label={truncate(label, labelWidth)} onPress={() => void open(flow.id)} />
+    </Box>,
+    <Text dimColor>
+      {' '}
+      {formatSize(flow.resSize).padStart(7)} {formatDuration(flow.durationMs).padStart(7)}
+    </Text>,
+  ]
 
   return (
     <Box flexDirection="column">
@@ -521,6 +556,18 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
             label={isRunning ? 'Stop' : 'Start'}
             onPress={() => void (isRunning ? stopProxy($) : startProxy($, options))}
           />
+          <Button
+            key="layout"
+            hotkey="t"
+            label={isTree ? 'List' : 'Tree'}
+            onPress={() => void setLayout(isTree ? 'list' : 'tree')}
+          />
+          {isTree ? (
+            <Button key="expand-all" hotkey="e" label="Expand all" onPress={() => void update($, expandedAtom, () => treeIds(tree))} />
+          ) : null}
+          {isTree ? (
+            <Button key="collapse-all" hotkey="c" label="Collapse all" onPress={() => void update($, expandedAtom, () => [])} />
+          ) : null}
           <Button key="clear" hotkey="x" label="Clear" onPress={() => void clearFlows($)} />
           <Button
             key="setup"
@@ -552,20 +599,42 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
               : 'The proxy is stopped. Start (s) runs it; Setup (n) shows how to connect clients.'}
         </Text>
       ) : null}
-      {shown.slice(0, MAX_ROWS).map(flow => (
-        <Box key={`row-${flow.id}`} flexDirection="row">
-          <Text color={statusColor(flow)}>{statusLabel(flow).padEnd(4)} </Text>
-          <Text bold>{flow.method.slice(0, 7).padEnd(7)} </Text>
-          <Box flexGrow={1}>
-            <Button plain key={`open-${flow.id}`} label={truncate(flowUrl(flow), urlWidth)} onPress={() => void open(flow.id)} />
-          </Box>
-          <Text dimColor>
-            {' '}
-            {formatSize(flow.resSize).padStart(7)} {formatDuration(flow.durationMs).padStart(7)}
-          </Text>
-        </Box>
-      ))}
-      {shown.length > MAX_ROWS ? <Text dimColor>…and {shown.length - MAX_ROWS} more; narrow the filter.</Text> : null}
+      {isTree
+        ? treeRows.slice(0, MAX_ROWS).map(row => {
+            const indent = '  '.repeat(row.depth)
+            if (row.kind === 'flow') {
+              return (
+                <Box key={`leaf-${row.flow.id}`} flexDirection="row">
+                  <Text>{indent}</Text>
+                  {flowCells(row.flow, treeLeafLabel(row.flow), urlWidth - indent.length)}
+                </Box>
+              )
+            }
+            const { node } = row
+            return (
+              <Box key={`branch-${node.id}`} flexDirection="row">
+                <Text>{indent}</Text>
+                <Button
+                  plain
+                  key={`node:${node.id}`}
+                  label={`${row.isOpen ? '▾' : '▸'} ${truncate(node.label, Math.max(10, width - indent.length - 24))}`}
+                  onPress={() => void toggleNode(node.id)}
+                />
+                <Text dimColor> {node.count}</Text>
+                {node.errors ? <Text color="error"> · {node.errors} failed</Text> : null}
+              </Box>
+            )
+          })
+        : shown.slice(0, MAX_ROWS).map(flow => (
+            <Box key={`row-${flow.id}`} flexDirection="row">
+              {flowCells(flow, flowUrl(flow), urlWidth)}
+            </Box>
+          ))}
+      {(isTree ? treeRows.length : shown.length) > MAX_ROWS ? (
+        <Text dimColor>
+          …and {(isTree ? treeRows.length : shown.length) - MAX_ROWS} more rows; narrow the filter{isTree ? ' or collapse a node' : ''}.
+        </Text>
+      ) : null}
     </Box>
   )
 }
@@ -742,7 +811,49 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
     ]
   }
 
-  const lan = status.addresses.filter(a => a !== '127.0.0.1')
+  const targets = proxyTargets(facts, tab)
+  const remote = targets.find(target => target.isRemote)
+  const phone = phoneAddress(facts)
+  const isLocalOnly = options.listen !== 'lan'
+  const others = facts.status.lan.filter(entry => !entry.isPrimary)
+  const kindName = (kind: string) => (kind === 'vpn' ? 'VPN' : kind === 'virtual' ? 'virtual machines' : 'another network')
+  const setListen = (value: 'lan' | 'local') => async () => {
+    // the engine reloads the mod with the new option; the proxy restarts on it
+    const result = await $.config.set({ key: 'proxy.listen', value })
+    await say($, 'deny' in result && result.deny ? `Could not change Listen on: ${result.deny}` : value === 'lan' ? 'Listening on the network now.' : 'Listening on this Mac only now.')
+  }
+
+  // a phone scans this before any proxy setting: a plain request to the port
+  // answers with the setup page
+  const qrUrl = remote && phone && !isLocalOnly ? `http://${phone.address}:${facts.status.port}/` : null
+  let qrBlock: RenderElement | null = null
+  if (qrUrl) {
+    const code = encodeQr(qrUrl)
+    // Raster draws on the terminal alone (elsewhere it is an empty fragment)
+    const isTerminal = e.surface === 'terminal'
+    const raster = isTerminal && 'Raster' in table ? qrRaster(code) : null
+    const picture =
+      isTerminal && 'Raster' in table && raster ? (
+        <table.Raster key="qr" columns={raster.columns} rows={raster.rows} cells={raster.cells} />
+      ) : 'Svg' in table ? (
+        <table.Svg source={qrSvg(code)} alt={`QR code for ${qrUrl}`} width={180} height={180} />
+      ) : null
+    qrBlock = (
+      <Box flexDirection="row" gap={2} marginTop={1}>
+        {picture}
+        <Box flexDirection="column" flexShrink={1}>
+          <Text bold>Scan with the {tab === 'ios' ? "iPhone's" : "phone's"} camera</Text>
+          <Text color="claude">{qrUrl}</Text>
+          <Text dimColor>
+            {tab === 'ios'
+              ? 'It opens the setup page: tap "iOS: download profile", then follow the steps below.'
+              : 'It opens the setup page: tap "Android: download certificate", then follow the steps below.'}
+          </Text>
+          <Text dimColor>The phone only has to be on the same network; no proxy setting is needed for this page.</Text>
+        </Box>
+      </Box>
+    )
+  }
 
   return (
     <Box flexDirection="column">
@@ -766,11 +877,52 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
           />
         ))}
       </Box>
-      <Text>
-        Proxy: 127.0.0.1:{facts.status.port}
-        {status.host === '0.0.0.0' && lan.length ? ` · on the network: ${lan.map(a => `${a}:${facts.status.port}`).join(', ')}` : ' · this Mac only'}
-        {isRunning ? '' : ' (not running)'}
-      </Text>
+      <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1} marginTop={1}>
+        <Text bold>Proxy settings to enter{isRunning ? '' : ' (once the proxy runs)'}</Text>
+        {targets.map(target => (
+          <Box key={`target-${target.client}`} flexDirection="row" flexWrap="wrap">
+            <Text>{target.client.padEnd(18)} </Text>
+            {target.host ? (
+              <Text bold color={target.isRemote && isLocalOnly ? 'warning' : 'success'}>
+                Server {target.host}  Port {target.port}
+              </Text>
+            ) : (
+              <Text color="warning">no address a phone can reach</Text>
+            )}
+            <Text dimColor>  {target.how}</Text>
+          </Box>
+        ))}
+        {remote && phone ? (
+          <Text dimColor>
+            {phone.address} is this Mac on {phone.label}
+            {others.length ? `; not ${others.map(entry => `${entry.address} (${kindName(entry.kind)})`).join(', ')}` : ''}.
+          </Text>
+        ) : null}
+        {remote ? (
+          <Box flexDirection="row" gap={1} flexWrap="wrap">
+            {phone ? (
+              <Button
+                key="copy-ip"
+                hotkey="i"
+                label={`copy ${phone.address}`}
+                onPress={press =>
+                  void $.ui.copy({ text: phone.address, surface: press.surface }).then(result =>
+                    say($, result.isCopied ? `Copied ${phone.address}.` : 'Could not copy.'),
+                  )
+                }
+              />
+            ) : null}
+            {isLocalOnly ? (
+              <Text color="warning">Listen on is local: a phone cannot reach the proxy yet.</Text>
+            ) : null}
+            {isLocalOnly ? (
+              <Button key="listen-lan" hotkey="l" variant="primary" label="Listen on LAN" onPress={() => void setListen('lan')()} />
+            ) : (
+              <Button key="listen-local" label="Back to this Mac only" onPress={() => void setListen('local')()} />
+            )}
+          </Box>
+        ) : null}
+      </Box>
       {status.ca ? (
         <Box flexDirection="column">
           <Text dimColor>CA: {status.ca.path}</Text>
@@ -791,6 +943,7 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
           {actions}
         </Box>
       ) : null}
+      {qrBlock}
       <Markdown key="guide" text={guide} />
     </Box>
   )

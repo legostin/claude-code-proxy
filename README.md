@@ -14,7 +14,7 @@ looks at the real request and response.
 [Website](https://legostin.github.io/claude-code-proxy/) · [Install](#install) · [Design notes](docs/design.md)
 
 ```
-● 127.0.0.1:8899 · 342 requests                        [ Stop ] [ Clear ] [ Setup ]
+● 127.0.0.1:8899 · 342 requests              [ Stop ] [ Tree ] [ Clear ] [ Setup ]
 Filter host:*.api.example.com is:error
 401  POST    https://api.example.com/v1/login                     1.2KB   180ms
 503  GET     https://api.example.com/v1/feed                        87B    2.1s
@@ -41,6 +41,9 @@ work:
 - MITM HTTPS proxy: decrypts TLS with per-host certificates from its own local CA. Plain HTTP,
   WebSocket upgrades and server-sent events pass through.
 - Request list with a filter language: `method:POST status:4xx host:*.example.com type:json is:error -text`.
+- A tree view: requests grouped by host and path, each node with its request and failure counts.
+- The exact proxy address for each client: the Mac's Wi-Fi address for a phone, picked over VPN tunnels and
+  virtual machine bridges, and a QR code the phone scans to open the setup page and get the certificate.
 - Request detail: headers, pretty-printed JSON, gzip, brotli, deflate and zstd decoded,
   **Copy as curl**, **To prompt**.
 - Diagnoses certificate trouble: a client that refuses the proxy certificate (CA not trusted, or
@@ -77,9 +80,9 @@ Answer `y` to add the marketplace and pick a scope. Then:
 | --- | --- |
 | A separate browser | **Setup → Browser → Open Google Chrome** (or Edge, Brave, Chromium). It starts a new instance with a profile of its own, `--proxy-server`, `--proxy-bypass-list=<-loopback>` so localhost is captured too, and `--ignore-certificate-errors-spki-list` so it trusts the proxy's certificates without touching the keychain. |
 | iOS Simulator | **Setup → iOS → CA → simulators** runs `xcrun simctl keychain add-root-cert` on every booted simulator. The simulator uses the macOS system proxy; the tab copies the `networksetup` commands to turn it on and off. |
-| iPhone / iPad | Set the **Listen on** option to `lan`, set the Wi-Fi proxy to the Mac's address, open `http://claude.proxy/` in Safari, install the profile, then turn it on under **Certificate Trust Settings**. |
+| iPhone / iPad | **Setup → iOS → Listen on LAN**, scan the QR code with the Camera to install the profile, turn it on under **Certificate Trust Settings**, then set the Wi-Fi proxy to the server and port the tab shows. |
 | Android emulator / phone on USB | **Setup → Android → Android → proxy** points an emulator at `10.0.2.2:8899`, and a USB device at `127.0.0.1:8899` over `adb reverse`. **Revert**, stopping the proxy or ending the session points them back. |
-| Android phone on Wi-Fi | Set **Listen on** to `lan`, set the Wi-Fi proxy, and install the CA from `http://claude.proxy/`. Apps trust user CAs only with a `network_security_config`; **config snippet** copies one. |
+| Android phone on Wi-Fi | **Setup → Android → Listen on LAN**, scan the QR code to download the certificate and install it, then set the Wi-Fi proxy to the hostname and port the tab shows. Apps trust user CAs only with a `network_security_config`; **config snippet** copies one. |
 | curl, Node, Python, Go | `curl -x http://127.0.0.1:8899 --cacert ~/.claude/proxy-mod/ca/ca.pem …`; **Setup → macOS / CLI** copies `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE`. |
 
 ## Filter

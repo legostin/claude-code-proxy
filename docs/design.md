@@ -141,3 +141,20 @@ tail of its stderr in the pane, [Start] again), the upstream is unreachable
 - Checked live: headless Chrome with `--ignore-certificate-errors-spki-list`
   went through the proxy over HTTPS with no CA in the keychain.
 - UI, comments and docs are all in English.
+
+## 0.2.0
+
+- The address to enter: `sidecar/network.mjs` ranks this machine's IPv4
+  addresses for a phone (the default route's interface unless it is a VPN;
+  VPN tunnels, VM and container bridges and link-local addresses last),
+  labels them by hardware port (`Wi-Fi (en0)`), and the sidecar reports a
+  change as a `network` event. Each setup tab lists every client with the
+  exact server and port (`proxyTargets`), and **Listen on LAN** switches the
+  option through `$.config.set`.
+- A QR code of `http://<address>:<port>/` on the iOS and Android tabs while
+  listening on the network: `hooks/qr.ts`, a dependency-free encoder (byte
+  mode, level M, versions 1 to 10), drawn as a `Raster` of half blocks on the
+  terminal and as `Svg` elsewhere. Verified with the jsQR decoder.
+- A tree view of the list: origin → path segments → requests, single-child
+  chains folded, request and failure counts per node, open nodes kept in
+  `$.state`.

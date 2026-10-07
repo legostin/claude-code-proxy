@@ -13,6 +13,10 @@ const READY = {
   host: '127.0.0.1',
   port: 8899,
   addresses: ['127.0.0.1'],
+  lan: [
+    { address: '10.7.9.5', iface: 'en0', label: 'Wi-Fi (en0)', kind: 'lan', isPrimary: true },
+    { address: '10.20.133.214', iface: 'utun8', label: 'utun8', kind: 'vpn', isPrimary: false },
+  ],
   pid: 4242,
   runDir: RUN_DIR,
   ca: {
@@ -97,12 +101,17 @@ function fakeMachine(on: On, clock: MockClock) {
   // Chrome is installed; nothing else is.
   on('fs.exists', async ($, e) => ({ value: e.path === '/Applications/Google Chrome.app' }))
   on('session.id', async () => ({ value: 'session' }))
+  const configSets: [string, unknown][] = []
+  on('config.set', async ($, e) => {
+    configSets.push([e.key, e.value])
+    return { value: e.value }
+  })
   const statuses: (string | undefined)[] = []
   on('ui.status', async ($, e) => {
     statuses.push(e.text)
     return { value: undefined }
   })
-  return { spawned, killed, statuses }
+  return { spawned, killed, statuses, configSets }
 }
 
 // Each act waits for the sidecar loop the start left running to go quiet.
@@ -199,6 +208,104 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ key: 'adb-on' })).toBeDefined()
     await ui.press({ key: 'tab-cli' })
     expect(await ui.find({ key: 'copy-trust' })).toBeDefined()
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(200)
+    await ui.unmount()
+  })
+}
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: setup names the exact address a phone enters, and switches to LAN`, SLOW, async ($, on) => {
+    const clock = mock.clock(on)
+    const machine = fakeMachine(on, clock)
+    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(250)
+    await ui.press({ key: 'setup' })
+    await ui.press({ key: 'tab-ios' })
+
+    expect(await ui.find({ text: /Server 10\.7\.9\.5 {2}Port 8899/ })).toBeDefined()
+    expect(await ui.find({ text: /Server 127\.0\.0\.1 {2}Port 8899/ })).toBeDefined()
+    expect(await ui.find({ text: /not 10\.20\.133\.214 \(VPN\)/ })).toBeDefined()
+    expect(await ui.find({ key: 'copy-ip' })).toBeDefined()
+    await ui.press({ key: 'listen-lan' })
+    expect(machine.configSets).toEqual([['proxy.listen', 'lan']])
+
+    await ui.press({ key: 'tab-android' })
+    expect(await ui.find({ text: /Server 10\.0\.2\.2 {2}Port 8899/ })).toBeDefined()
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(200)
+    await ui.unmount()
+  })
+
+  test(`${surface}: the tree groups requests by host and path`, SLOW, async ($, on) => {
+    const clock = mock.clock(on)
+    fakeMachine(on, clock)
+    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(250)
+    await ui.press({ key: 'layout' })
+
+    const api = 'node:o:https://api.example.com'
+    expect((await ui.find({ key: api }))?.text).toBe('▸ https://api.example.com')
+    expect(await ui.find({ key: 'open-2' })).toBeUndefined()
+    await ui.press({ key: api })
+    expect((await ui.find({ key: api }))?.text).toBe('▾ https://api.example.com')
+    await ui.press({ key: 'node:p:https://api.example.com/v1' })
+    expect((await ui.find({ key: 'node:p:https://api.example.com/v1/items/1' }))?.text).toBe('▸ /items/1')
+    await ui.press({ key: 'node:p:https://api.example.com/v1/login' })
+    expect((await ui.find({ key: 'open-2' }))?.text).toBe('#2')
+    expect(await ui.find({ text: /1 failed/ })).toBeDefined()
+
+    await ui.press({ key: 'open-2' })
+    expect(await ui.find({ text: /#2 POST https:\/\/api\.example\.com\/v1\/login/ })).toBeDefined()
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'expand-all' })
+    for (const id of [1, 2, 3]) expect(await ui.find({ key: `open-${id}` })).toBeDefined()
+    await ui.press({ key: 'collapse-all' })
+    expect(await ui.find({ key: 'open-1' })).toBeUndefined()
+    await ui.press({ key: 'layout' })
+    expect((await ui.find({ key: 'open-1' }))?.text).toBe('https://api.example.com/v1/items/1')
+    await ui.press({ key: 'toggle' })
+    await clock.advance(200)
+    await ui.unmount()
+  })
+}
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: on LAN the phone tabs show a QR code of the setup address`, { ...SLOW, options: { listen: 'lan' } }, async ($, on) => {
+    const clock = mock.clock(on)
+    fakeMachine(on, clock)
+    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(250)
+    await ui.press({ key: 'setup' })
+    // the browser tab has no phone, so no code
+    expect(await ui.find({ text: /Scan with/ })).toBeUndefined()
+    for (const tab of ['ios', 'android']) {
+      await ui.press({ key: `tab-${tab}` })
+      expect(await ui.find({ text: 'http://10.7.9.5:8899/' })).toBeDefined()
+      expect(await ui.find(surface === 'terminal' ? { type: 'Raster', key: 'qr' } : { type: 'Svg' })).toBeDefined()
+      expect(await ui.find({ key: 'listen-local' })).toBeDefined()
+    }
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(200)
+    await ui.unmount()
+  })
+
+  test(`${surface}: listening on this Mac only, there is no code to scan`, SLOW, async ($, on) => {
+    const clock = mock.clock(on)
+    fakeMachine(on, clock)
+    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(250)
+    await ui.press({ key: 'setup' })
+    await ui.press({ key: 'tab-ios' })
+    expect(await ui.find({ text: /Scan with/ })).toBeUndefined()
+    expect(await ui.find({ key: 'listen-lan' })).toBeDefined()
     await ui.press({ key: 'back' })
     await ui.press({ key: 'toggle' })
     await clock.advance(200)

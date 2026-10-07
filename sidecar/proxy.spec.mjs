@@ -14,6 +14,7 @@ import { after, before, describe, test } from 'node:test'
 import { gzipSync } from 'node:zlib'
 
 import { caCommonName, createLeafFactory, ensureCA } from './certs.mjs'
+import { rankAddresses } from './network.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -125,7 +126,37 @@ describe('sidecar', () => {
     assert.equal(caCommonName(''), 'Claude Code Proxy CA (local)')
   })
 
+  test('puts the Wi-Fi address a phone should use first, VPN and VM bridges last', () => {
+    const v4 = (address, extra = {}) => ({ address, family: 'IPv4', internal: false, ...extra })
+    const ranked = rankAddresses(
+      {
+        lo0: [v4('127.0.0.1', { internal: true })],
+        utun8: [v4('10.20.133.214')],
+        bridge100: [v4('192.168.139.3')],
+        en0: [{ address: 'fe80::1', family: 'IPv6', internal: false }, v4('10.7.9.5')],
+        en8: [v4('169.254.61.132')],
+      },
+      'en0',
+      { en0: 'Wi-Fi', bridge0: 'Thunderbolt Bridge' },
+    )
+    assert.deepEqual(
+      ranked.map(a => [a.address, a.kind, a.isPrimary]),
+      [
+        ['10.7.9.5', 'lan', true],
+        ['192.168.139.3', 'virtual', false],
+        ['10.20.133.214', 'vpn', false],
+      ],
+    )
+    assert.equal(ranked[0].label, 'Wi-Fi (en0)')
+    // the default route through a VPN does not make the VPN the phone's address
+    assert.equal(rankAddresses({ utun3: [v4('10.8.0.2')], en0: [v4('192.168.1.20')] }, 'utun3', { en0: 'Wi-Fi' })[0].address, '192.168.1.20')
+    // nothing a phone could reach: no primary
+    assert.equal(rankAddresses({ utun3: [v4('10.8.0.2')] }, 'utun3').some(a => a.isPrimary), false)
+  })
+
   test('reports where it listens and its CA', () => {
+    assert.ok(Array.isArray(ready.lan))
+    assert.ok(ready.lan.every(a => typeof a.address === 'string' && typeof a.label === 'string'))
     assert.equal(ready.host, '127.0.0.1')
     assert.ok(ready.port > 0)
     assert.match(ready.ca.fingerprint256, /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/)
