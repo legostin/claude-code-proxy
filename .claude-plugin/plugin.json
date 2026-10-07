@@ -1,0 +1,61 @@
+{
+  "name": "proxy",
+  "version": "0.1.0",
+  "description": "An HTTPS debugging proxy inside Claude Code: intercepts browser, iOS and Android traffic with its own CA, setup guides, a filterable request list and tools for Claude.",
+  "author": {
+    "name": "Legostin Vyacheslav",
+    "url": "https://github.com/legostin"
+  },
+  "homepage": "https://legostin.github.io/claude-code-proxy/",
+  "repository": "https://github.com/legostin/claude-code-proxy",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "claude-code-mod",
+    "proxy",
+    "https-proxy",
+    "mitm",
+    "debugging",
+    "network",
+    "ios",
+    "android",
+    "proxyman-alternative"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "port": {
+      "type": "number",
+      "title": "Port",
+      "description": "The port the proxy listens on.",
+      "default": 8899
+    },
+    "listen": {
+      "type": "string",
+      "title": "Listen on",
+      "description": "local: this Mac only (browser, simulators, Android emulator). lan: also phones on the same network.",
+      "options": [
+        "local",
+        "lan"
+      ],
+      "default": "local"
+    },
+    "noDecrypt": {
+      "type": "string",
+      "title": "Hosts not to decrypt",
+      "description": "Comma-separated hosts tunnelled untouched (pinned services); *.example.com covers subdomains.",
+      "default": "*.apple.com,*.icloud.com,*.mzstatic.com,*.apple-cloudkit.com"
+    },
+    "maxFlows": {
+      "type": "number",
+      "title": "Requests kept",
+      "description": "How many of the latest requests the list keeps.",
+      "default": 2000
+    },
+    "node": {
+      "type": "string",
+      "title": "Node executable",
+      "description": "The node binary that runs the proxy (18 or newer).",
+      "default": "node"
+    }
+  }
+}

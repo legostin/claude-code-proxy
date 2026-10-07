@@ -1,0 +1,16 @@
+{
+  "name": "proxy",
+  "owner": {
+    "name": "legostin"
+  },
+  "metadata": {
+    "description": "proxy: a Claude Code mod that intercepts and decrypts HTTPS from your browser, iOS and Android, and lets Claude read it."
+  },
+  "plugins": [
+    {
+      "name": "proxy",
+      "source": "./",
+      "description": "An HTTPS debugging proxy inside Claude Code: intercepts browser, iOS and Android traffic with its own CA, setup guides, a filterable request list and tools for Claude."
+    }
+  ]
+}

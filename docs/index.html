@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>proxy: an HTTPS debugging proxy inside Claude Code</title>
+<meta name="description" content="A Claude Code mod that intercepts and decrypts HTTPS traffic from your browser, iOS Simulator, iPhone and Android, lists every request with a filter, and lets Claude read the real requests and responses. A Proxyman and Charles alternative inside Claude Code.">
+<meta name="keywords" content="Claude Code, Claude Code plugin, Claude Code mod, HTTPS proxy, MITM proxy, debugging proxy, intercept HTTPS traffic, Proxyman alternative, Charles Proxy alternative, mitmproxy, iOS Simulator proxy, Android emulator proxy, debug network requests, AI coding agent">
+<meta name="author" content="Legostin Vyacheslav">
+<link rel="canonical" href="https://legostin.github.io/claude-code-proxy/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="claude-code-proxy">
+<meta property="og:title" content="proxy: an HTTPS debugging proxy inside Claude Code">
+<meta property="og:description" content="Intercept and decrypt HTTPS from your browser, iOS and Android, filter the requests, and let Claude read them. No separate proxy app.">
+<meta property="og:url" content="https://legostin.github.io/claude-code-proxy/">
+<meta property="og:image" content="https://legostin.github.io/claude-code-proxy/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="proxy for Claude Code: a request list with 401 and 503 rows and a filter">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="proxy: an HTTPS debugging proxy inside Claude Code">
+<meta name="twitter:description" content="Intercept HTTPS from your browser, iOS and Android, and let Claude read the real requests and responses.">
+<meta name="twitter:image" content="https://legostin.github.io/claude-code-proxy/og.png">
+<meta name="theme-color" content="#0f1115">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='7' fill='%23d97757'/%3E%3Cpath d='M8 12h12l-3-3M24 20H12l3 3' stroke='%23fff' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareSourceCode",
+  "name": "proxy for Claude Code",
+  "alternateName": "claude-code-proxy",
+  "description": "A Claude Code mod that intercepts and decrypts HTTP and HTTPS traffic from a browser, the iOS Simulator, an iPhone, the Android emulator or an Android phone, lists every request with a filter, and gives Claude tools to read the requests and responses.",
+  "url": "https://legostin.github.io/claude-code-proxy/",
+  "codeRepository": "https://github.com/legostin/claude-code-proxy",
+  "programmingLanguage": ["TypeScript", "JavaScript"],
+  "runtimePlatform": "Node.js",
+  "operatingSystem": "macOS",
+  "license": "https://opensource.org/licenses/MIT",
+  "author": { "@type": "Person", "name": "Legostin Vyacheslav", "url": "https://github.com/legostin" },
+  "keywords": "Claude Code, HTTPS proxy, MITM proxy, debugging proxy, Proxyman alternative, Charles Proxy alternative, iOS Simulator, Android emulator"
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Is it a replacement for Proxyman, Charles or mitmproxy?",
+      "acceptedAnswer": { "@type": "Answer", "text": "For everyday debugging of what an app sent and what came back, yes, without leaving Claude Code. It has no breakpoints, rewrite rules, HTTP/2 or gRPC." }
+    },
+    {
+      "@type": "Question",
+      "name": "Do I have to install the certificate on my Mac?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Not for the separate browser, which trusts the proxy by SPKI hash. Safari, native macOS apps and the iOS Simulator need the CA trusted; the setup tabs give the commands." }
+    },
+    {
+      "@type": "Question",
+      "name": "Why do some requests show CERT?",
+      "acceptedAnswer": { "@type": "Answer", "text": "The client refused the proxy's certificate: its CA is not trusted yet, or the app pins its certificates. Finish the setup steps, or add the host to Hosts not to decrypt." }
+    },
+    {
+      "@type": "Question",
+      "name": "Does my traffic leave my machine?",
+      "acceptedAnswer": { "@type": "Answer", "text": "No. The proxy listens on 127.0.0.1 unless you choose lan, recorded requests stay in ~/.claude/proxy-mod, and Claude reads a request only when it calls the tools." }
+    }
+  ]
+}
+</script>
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1c1b19; --muted: #6b6760; --line: #e6e2da;
+    --card: #ffffff; --accent: #c4623e; --code-bg: #f3f0ea;
+    --ok: #2f7d4f; --warn: #a86a00; --err: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1115; --fg: #ece9e3; --muted: #9a958c; --line: #262a31;
+      --card: #161920; --accent: #e08a68; --code-bg: #1c2027;
+      --ok: #6cc690; --warn: #e3b341; --err: #f2766b;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1115; --fg: #ece9e3; --muted: #9a958c; --line: #262a31;
+    --card: #161920; --accent: #e08a68; --code-bg: #1c2027;
+    --ok: #6cc690; --warn: #e3b341; --err: #f2766b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 48px 16px 72px; }
+  header .tag { color: var(--accent); font-weight: 600; letter-spacing: .02em; font-size: 14px; }
+  h1 { font-size: clamp(30px, 5vw, 44px); line-height: 1.15; margin: 8px 0 16px; letter-spacing: -0.02em; }
+  h2 { font-size: 22px; margin: 48px 0 12px; }
+  h3 { font-size: 17px; margin: 24px 0 6px; }
+  p.lead { font-size: 19px; color: var(--muted); margin: 0 0 24px; }
+  a { color: var(--accent); }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0 8px; }
+  .btn { display: inline-block; padding: 10px 16px; border-radius: 8px; text-decoration: none; font-weight: 600; border: 1px solid var(--line); color: var(--fg); background: var(--card); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; overflow-x: auto; margin: 12px 0; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre code { background: none; padding: 0; }
+  .pane { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 24px 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13.5px; overflow-x: auto; }
+  .pane .row { white-space: pre; }
+  .pane .head { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 6px; }
+  .pane .live { color: var(--ok); font-weight: 700; }
+  .pane .btns { color: var(--muted); white-space: pre; }
+  .pane .filter { color: var(--muted); margin-bottom: 6px; }
+  .pane .filter b { color: var(--fg); font-weight: 400; }
+  .s2 { color: var(--ok); } .s4 { color: var(--warn); } .s5 { color: var(--err); } .dim { color: var(--muted); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .card h3 { margin: 0 0 6px; font-size: 16px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .table-wrap { overflow-x: auto; }
+  ul.limits li { margin-bottom: 6px; }
+  details { border-bottom: 1px solid var(--line); padding: 10px 0; }
+  summary { cursor: pointer; font-weight: 600; }
+  details p { margin: 8px 0 0; color: var(--muted); }
+  footer { margin-top: 56px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); padding-top: 16px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="tag">Claude Code mod · open source · MIT</div>
+    <h1>An HTTPS debugging proxy inside Claude Code</h1>
+    <p class="lead"><strong>proxy</strong> intercepts and decrypts the HTTP and HTTPS traffic of your browser, the iOS Simulator, an iPhone, the Android emulator or an Android phone. Every request lands in a filterable list, and Claude reads the same traffic, so <em>"why does login return 401?"</em> gets answered from the real request and response.</p>
+    <div class="actions">
+      <a class="btn primary" href="https://github.com/legostin/claude-code-proxy">View on GitHub</a>
+      <a class="btn" href="#install">Install</a>
+      <a class="btn" href="#clients">Set up a client</a>
+    </div>
+  </header>
+
+  <div class="pane" role="img" aria-label="The proxy pane: a request list with a filter">
+    <div class="head"><span class="live">● 127.0.0.1:8899 · 342 requests</span><span class="btns">[ Stop ] [ Clear ] [ Setup ]</span></div>
+    <div class="filter">Filter <b>host:*.example.com is:error</b></div>
+    <div class="row"><span class="s4">401 </span> POST    https://api.example.com/v1/login            <span class="dim">1.2KB   180ms</span></div>
+    <div class="row"><span class="s5">503 </span> GET     https://api.example.com/v1/feed               <span class="dim">87B    2.1s</span></div>
+    <div class="row"><span class="s5">CERT</span> CONNECT gateway.example.com:443                       <span class="dim">0B     0ms</span></div>
+  </div>
+
+  <h2>Why</h2>
+  <p>Debugging a mobile or web client usually means a separate proxy app, a certificate dance on every device, and copying requests into the chat by hand. proxy keeps all of it where you already work.</p>
+  <div class="grid">
+    <div class="card"><h3>No separate app</h3><p>The proxy, its certificate authority and the request list live in Claude Code, behind <code>/proxy</code>.</p></div>
+    <div class="card"><h3>One click for a browser</h3><p>A separate Chrome, Edge, Brave or Chromium window whose whole traffic goes through the proxy, localhost included, with no certificate to install.</p></div>
+    <div class="card"><h3>Simulators set up for you</h3><p>The CA goes into every booted iOS Simulator with one button; the Android emulator or a USB phone is pointed at the proxy, and back, with another.</p></div>
+    <div class="card"><h3>Claude sees the traffic</h3><p>Two tools hand the model the request list and any request in full: headers and decoded bodies.</p></div>
+  </div>
+
+  <h2>Features</h2>
+  <ul>
+    <li>MITM HTTPS proxy with per-host certificates from a CA made on your machine; plain HTTP, WebSocket upgrades and server-sent events pass through.</li>
+    <li>A filter language: <code>method:POST status:4xx host:*.example.com type:json is:error -text</code>.</li>
+    <li>Request detail with pretty-printed JSON and gzip, brotli, deflate and zstd decoded; <strong>Copy as curl</strong> and <strong>To prompt</strong>.</li>
+    <li>Certificate trouble made visible: a client that refuses the proxy certificate, because the CA is not trusted or the app pins certificates, shows up as a <code>CERT</code> row.</li>
+    <li>A setup page served by the proxy at <code>http://claude.proxy/</code> with an iOS <code>.mobileconfig</code>, an Android <code>.crt</code> and a <code>.pem</code>.</li>
+    <li>Safe on the network: in <code>lan</code> mode phones can use it, but nothing on the network can reach this Mac's localhost through it.</li>
+    <li>No dependencies: a Node.js sidecar and <code>openssl</code>.</li>
+  </ul>
+
+  <h2 id="clients">Set up a client</h2>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Client</th><th>How</th></tr>
+    <tr><td>A separate browser</td><td><strong>Setup → Browser → Open Google Chrome</strong> (or Edge, Brave, Chromium): its own profile, <code>--proxy-server</code>, localhost captured, and trust by SPKI hash instead of a keychain entry.</td></tr>
+    <tr><td>iOS Simulator</td><td><strong>CA → simulators</strong> adds the CA to every booted simulator; the tab copies the <code>networksetup</code> commands for the macOS system proxy the simulator uses.</td></tr>
+    <tr><td>iPhone / iPad</td><td>Listen on <code>lan</code>, set the Wi-Fi proxy, open <code>http://claude.proxy/</code>, install the profile, trust the certificate.</td></tr>
+    <tr><td>Android emulator / USB phone</td><td><strong>Android → proxy</strong>: <code>10.0.2.2:8899</code> for an emulator, <code>adb reverse</code> for USB; reverted when the proxy stops.</td></tr>
+    <tr><td>Android phone on Wi-Fi</td><td>Listen on <code>lan</code>, set the Wi-Fi proxy, install the CA; apps need a <code>network_security_config</code>, which the tab copies.</td></tr>
+    <tr><td>curl, Node, Python, Go</td><td><code>HTTPS_PROXY</code>, <code>NODE_EXTRA_CA_CERTS</code>, <code>SSL_CERT_FILE</code>, <code>REQUESTS_CA_BUNDLE</code>, copied from the macOS / CLI tab.</td></tr>
+  </table>
+  </div>
+
+  <h2>Tools for Claude</h2>
+  <div class="table-wrap">
+  <table>
+    <tr><th>Tool</th><th>What the model gets</th></tr>
+    <tr><td><code>mcp__proxy__list_requests</code></td><td>The proxy's state and one line per request, filtered with the same language as the pane.</td></tr>
+    <tr><td><code>mcp__proxy__get_request</code></td><td>One request in full: URL, status, timing, headers, decoded bodies.</td></tr>
+  </table>
+  </div>
+  <p>Ask <em>"list the failed requests to api.example.com and tell me what they have in common"</em>, or press <strong>To prompt</strong> on a request to start the question.</p>
+
+  <h2 id="install">Install</h2>
+  <p>Requires Claude Code with mods (tested on 2.1.292), Node.js 18 or newer, and <code>openssl</code> (built into macOS). At the Claude Code prompt:</p>
+<pre><code>/plugin install proxy --marketplace legostin/claude-code-proxy</code></pre>
+  <p>Answer <code>y</code> to add the marketplace and pick a scope, then run <code>/proxy</code>.</p>
+
+  <h2>FAQ</h2>
+  <details><summary>Is it a replacement for Proxyman, Charles or mitmproxy?</summary><p>For everyday debugging of what an app sent and what came back, yes, without leaving Claude Code. It has no breakpoints, rewrite rules, HTTP/2 or gRPC.</p></details>
+  <details><summary>Do I have to install the certificate on my Mac?</summary><p>Not for the separate browser, which trusts the proxy by SPKI hash. Safari, native macOS apps and the iOS Simulator need the CA trusted; the setup tabs give the commands.</p></details>
+  <details><summary>Why do some requests show CERT?</summary><p>The client refused the proxy's certificate: its CA is not trusted yet, or the app pins its certificates. Finish the setup steps, or add the host to Hosts not to decrypt.</p></details>
+  <details><summary>Does my traffic leave my machine?</summary><p>No. The proxy listens on 127.0.0.1 unless you choose lan, recorded requests stay in ~/.claude/proxy-mod, and Claude reads a request only when it calls the tools.</p></details>
+
+  <h2>Limits</h2>
+  <ul class="limits">
+    <li>Clients are offered HTTP/1.1 only, so gRPC over HTTP/2 does not get through.</li>
+    <li>WebSocket frames are not decoded; an upgrade shows as one row.</li>
+    <li>The macOS system proxy is not switched automatically, so a crashed session cannot leave the Mac without a network.</li>
+    <li>Mods are an early-access Claude Code API.</li>
+  </ul>
+
+  <footer>
+    proxy is MIT licensed · <a href="https://github.com/legostin/claude-code-proxy">source</a> · <a href="https://github.com/legostin/claude-code-proxy/blob/main/docs/design.md">design notes</a> · not affiliated with Anthropic, Proxyman, Charles or mitmproxy
+  </footer>
+</main>
+</body>
+</html>
