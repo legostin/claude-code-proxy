@@ -1955,7 +1955,8 @@ async function drawRules($: EngineInterface, e: PaneEvent): Promise<RenderElemen
         const count = hits(entry.id)
         return (
           <Box key={`rule-${entry.id}-${index}`} flexDirection="column" marginTop={1}>
-            <Box flexDirection="row" gap={1} flexWrap="wrap">
+            {/* one row: a long name wraps in its own column, the controls stay put */}
+            <Box flexDirection="row" gap={1}>
               <Text dimColor>{String(index + 1).padStart(2)}.</Text>
               <Button
                 plain
@@ -1963,10 +1964,11 @@ async function drawRules($: EngineInterface, e: PaneEvent): Promise<RenderElemen
                 label={entry.enabled ? '[on] ' : '[off]'}
                 onPress={() => void toggleRule($, entry.id)}
               />
-              <Text bold color={isActive ? undefined : 'subtle'}>
-                {entry.name ?? entry.id}
-              </Text>
-              {entry.name ? <Text dimColor>({entry.id})</Text> : null}
+              <Box flexShrink={1} flexGrow={1}>
+                <Text bold color={isActive ? undefined : 'subtle'}>
+                  {entry.name ?? entry.id}
+                </Text>
+              </Box>
               <Button plain key={`rule-up:${entry.id}`} label="↑" onPress={() => void moveRule($, entry.id, -1)} />
               <Button plain key={`rule-down:${entry.id}`} label="↓" onPress={() => void moveRule($, entry.id, 1)} />
               <Text dimColor>
@@ -1974,7 +1976,7 @@ async function drawRules($: EngineInterface, e: PaneEvent): Promise<RenderElemen
               </Text>
             </Box>
             {entry.description ? <Text>    {entry.description}</Text> : null}
-            {entry.summary ? <Text dimColor>    {entry.summary}</Text> : null}
+            {entry.summary ? <Text dimColor>    {entry.name ? `${entry.id}: ` : ''}{entry.summary}</Text> : null}
             {entry.errors.map((error, i) => (
               <Text key={`rule-error-${entry.id}-${i}`} color="error">
                 {'    '}

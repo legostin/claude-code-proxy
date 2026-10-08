@@ -400,7 +400,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     expect(await ui.find({ text: /4 rules, 2 on/ })).toBeDefined()
     expect(await ui.find({ text: 'The feed takes its time' })).toBeDefined()
-    expect(await ui.find({ text: /path \/v1\/feed\* → before sending: wait 2 s/ })).toBeDefined()
+    expect(await ui.find({ text: /slow-feed: path \/v1\/feed\* → before sending: wait 2 s/ })).toBeDefined()
     expect(await ui.find({ text: /answer 500 with JSON \{"error":"down"\} without asking the server/ })).toBeDefined()
     expect(await ui.find({ text: /request\[0\]: type must be one of/ })).toBeDefined()
     expect(await ui.find({ text: /script is not approved/ })).toBeDefined()
