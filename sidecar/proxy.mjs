@@ -23,6 +23,7 @@ import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 
 import { createLeafFactory, ensureCA, mobileConfig } from './certs.mjs'
+import { peekServerName } from './clienthello.mjs'
 import {
   applyRequestRules,
   applyResponseRules,
@@ -992,10 +993,15 @@ let selfGuard = null
 async function handleConnect(req, clientSocket, head) {
   // held until we know what to do with it: the client's first bytes wait in the buffer
   clientSocket.pause()
-  const { host, port } = parseAuthority(req.url ?? '')
+  const authority = parseAuthority(req.url ?? '')
+  const { port } = authority
   clientSocket.on('error', () => {})
   clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
   if (head?.length) clientSocket.unshift(head)
+  // A client that CONNECTs to an address (the Android emulator does) still
+  // names the host in its TLS handshake: that name is what the list tracks,
+  // what the rules match and what the flows show.
+  const host = net.isIP(authority.host) ? ((await peekServerName(clientSocket, 2000)) ?? authority.host) : authority.host
   if (!tracks(host)) return quietTunnel(clientSocket, host, port)
   // Claude Code trusts no CA of ours: never decrypt Claude's services, nor
   // anything Claude started while the system proxy sends it here

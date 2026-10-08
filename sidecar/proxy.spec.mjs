@@ -7,13 +7,16 @@ import { X509Certificate } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import https from 'node:https'
+import net from 'node:net'
 import { networkInterfaces, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { after, before, describe, test } from 'node:test'
+import tls from 'node:tls'
 import { gzipSync } from 'node:zlib'
 
 import { caCommonName, createLeafFactory, ensureCA } from './certs.mjs'
+import { isClientHelloComplete, serverNameOf } from './clienthello.mjs'
 import { rankAddresses } from './network.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -325,6 +328,30 @@ describe('sidecar', () => {
     }
   })
 
+  test('tracks a client that CONNECTs to an address by the name in its handshake', async () => {
+    const trackingFile = join(dataDir, 'tracking-by-address.json')
+    await writeFile(trackingFile, JSON.stringify({ enabled: true, patterns: ['localhost'] }))
+    const tracked = startSidecar(join(dataDir, 'proxy'), ['--tracking', trackingFile, '--insecure-upstream'])
+    const trackedReady = await tracked.waitFor(() => tracked.events.find(e => e.t === 'ready'), 'ready')
+    try {
+      // like the Android emulator: CONNECT 127.0.0.1:<port>, SNI localhost
+      const out = await curl([
+        '-x', `http://127.0.0.1:${trackedReady.port}`,
+        '--cacert', trackedReady.ca.path,
+        '--connect-to', `localhost:${httpsPort}:127.0.0.1:${httpsPort}`,
+        `https://localhost:${httpsPort}/by-address`,
+      ])
+      assert.equal(out.stdout, '<h1>secure</h1>', out.stderr)
+      const flow = await tracked.waitFor(
+        () => [...tracked.flows.values()].find(f => f.path === '/by-address' && f.state === 'done'),
+        'flow by address',
+      )
+      assert.equal(flow.host, 'localhost')
+    } finally {
+      tracked.child.kill()
+    }
+  })
+
   test('fails fast when the port is taken', async () => {
     const second = spawn(process.execPath, [join(here, 'proxy.mjs'), '--port', String(ready.port), '--data', join(dataDir, 'proxy')], {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -334,5 +361,39 @@ describe('sidecar', () => {
     const code = await new Promise(resolve => second.on('close', resolve))
     assert.equal(code, 3)
     assert.equal(JSON.parse(out.trim().split('\n').at(-1)).code, 'port-busy')
+  })
+})
+
+describe('client hello', () => {
+  // the first bytes a real TLS client sends, caught by a plain TCP server
+  async function helloFrom(options) {
+    const server = net.createServer()
+    const port = await listen(server)
+    const first = new Promise(resolve => server.once('connection', socket => socket.once('data', resolve)))
+    const client = tls.connect({ port, host: '127.0.0.1', rejectUnauthorized: false, ...options })
+    client.on('error', () => {})
+    const hello = await first
+    client.destroy()
+    server.close()
+    return hello
+  }
+
+  test('reads the server name a client asks for', async () => {
+    const hello = await helloFrom({ servername: 'Legost.IN' })
+    assert.ok(isClientHelloComplete(hello))
+    assert.equal(serverNameOf(hello), 'legost.in')
+  })
+
+  test('has no name for a client that sends none, or for what is not TLS', async () => {
+    assert.equal(serverNameOf(await helloFrom({ servername: '' })), null)
+    assert.equal(serverNameOf(Buffer.from('GET / HTTP/1.1\r\n\r\n')), null)
+    assert.ok(isClientHelloComplete(Buffer.from('GET')))
+  })
+
+  test('waits for the rest of a record split in two', async () => {
+    const hello = await helloFrom({ servername: 'example.com' })
+    const half = hello.subarray(0, 40)
+    assert.equal(isClientHelloComplete(half), false)
+    assert.equal(serverNameOf(half), null)
   })
 })

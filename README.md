@@ -146,6 +146,10 @@ list on and off, and shows the hosts that passed through untracked, busiest firs
 there. The list belongs to the Claude Code session and comes back with `--resume`. Claude manages
 it with `mcp__wirepane__track_domains`.
 
+Some clients connect to an address rather than a name (the Android emulator resolves names
+itself): the proxy reads the host name from the TLS handshake, so the list, the rules and the
+request list all see `api.example.com`, not `203.0.113.7`.
+
 ## Rules: change requests and responses
 
 Rules change matching requests before they are sent and their responses before the client gets
