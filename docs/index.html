@@ -3,22 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>proxy: an HTTPS debugging proxy inside Claude Code</title>
+<title>Wirepane: an HTTPS debugging proxy inside Claude Code</title>
 <meta name="description" content="A Claude Code mod that intercepts and decrypts HTTPS traffic from your browser, iOS Simulator, iPhone and Android, lists every request with a filter, and lets Claude read the real requests and responses. A Proxyman and Charles alternative inside Claude Code.">
 <meta name="keywords" content="Claude Code, Claude Code plugin, Claude Code mod, HTTPS proxy, MITM proxy, debugging proxy, intercept HTTPS traffic, Proxyman alternative, Charles Proxy alternative, mitmproxy, iOS Simulator proxy, Android emulator proxy, debug network requests, AI coding agent">
 <meta name="author" content="Legostin Vyacheslav">
 <link rel="canonical" href="https://legostin.github.io/claude-code-proxy/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="claude-code-proxy">
-<meta property="og:title" content="proxy: an HTTPS debugging proxy inside Claude Code">
+<meta property="og:title" content="Wirepane: an HTTPS debugging proxy inside Claude Code">
 <meta property="og:description" content="Intercept and decrypt HTTPS from your browser, iOS and Android, filter the requests, and let Claude read them. No separate proxy app.">
 <meta property="og:url" content="https://legostin.github.io/claude-code-proxy/">
 <meta property="og:image" content="https://legostin.github.io/claude-code-proxy/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="proxy for Claude Code: a request list with 401 and 503 rows and a filter">
+<meta property="og:image:alt" content="Wirepane for Claude Code: a request list with 401 and 503 rows and a filter">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="proxy: an HTTPS debugging proxy inside Claude Code">
+<meta name="twitter:title" content="Wirepane: an HTTPS debugging proxy inside Claude Code">
 <meta name="twitter:description" content="Intercept HTTPS from your browser, iOS and Android, and let Claude read the real requests and responses.">
 <meta name="twitter:image" content="https://legostin.github.io/claude-code-proxy/og.png">
 <meta name="theme-color" content="#0f1115">
@@ -27,7 +27,7 @@
 {
   "@context": "https://schema.org",
   "@type": "SoftwareSourceCode",
-  "name": "proxy for Claude Code",
+  "name": "Wirepane",
   "alternateName": "claude-code-proxy",
   "description": "A Claude Code mod that intercepts and decrypts HTTP and HTTPS traffic from a browser, the iOS Simulator, an iPhone, the Android emulator or an Android phone, lists every request with a filter, and gives Claude tools to read the requests and responses.",
   "url": "https://legostin.github.io/claude-code-proxy/",
@@ -63,7 +63,7 @@
     {
       "@type": "Question",
       "name": "Does my traffic leave my machine?",
-      "acceptedAnswer": { "@type": "Answer", "text": "No. The proxy listens on 127.0.0.1 unless you choose lan, recorded requests stay in ~/.claude/proxy-mod, and Claude reads a request only when it calls the tools." }
+      "acceptedAnswer": { "@type": "Answer", "text": "Only for the servers it was going to anyway. The proxy listens on 127.0.0.1 unless you choose lan, recorded requests stay in ~/.claude/proxy-mod, and Claude reads a request only when it calls the tools; then that request is part of the conversation." }
     }
   ]
 }
@@ -130,7 +130,7 @@
   <header>
     <div class="tag">Claude Code mod · open source · MIT</div>
     <h1>An HTTPS debugging proxy inside Claude Code</h1>
-    <p class="lead"><strong>proxy</strong> intercepts and decrypts the HTTP and HTTPS traffic of your browser, the iOS Simulator, an iPhone, the Android emulator or an Android phone. Every request lands in a filterable list, and Claude reads the same traffic, so <em>"why does login return 401?"</em> gets answered from the real request and response.</p>
+    <p class="lead"><strong>Wirepane</strong> intercepts and decrypts the HTTP and HTTPS traffic of your browser, the iOS Simulator, an iPhone, the Android emulator or an Android phone. Every request lands in a filterable list, and Claude reads the same traffic, so <em>"why does login return 401?"</em> gets answered from the real request and response.</p>
     <div class="actions">
       <a class="btn primary" href="https://github.com/legostin/claude-code-proxy">View on GitHub</a>
       <a class="btn" href="#install">Install</a>
@@ -201,22 +201,22 @@
   <div class="table-wrap">
   <table>
     <tr><th>Tool</th><th>What the model gets</th></tr>
-    <tr><td><code>mcp__proxy__list_requests</code></td><td>The proxy's state and one line per request, filtered with the same language as the pane.</td></tr>
-    <tr><td><code>mcp__proxy__get_request</code></td><td>One request in full: URL, status, timing, headers, decoded bodies.</td></tr>
+    <tr><td><code>mcp__wirepane__list_requests</code></td><td>The proxy's state and one line per request, filtered with the same language as the pane.</td></tr>
+    <tr><td><code>mcp__wirepane__get_request</code></td><td>One request in full: URL, status, timing, headers, decoded bodies.</td></tr>
   </table>
   </div>
   <p>Ask <em>"list the failed requests to api.example.com and tell me what they have in common"</em>, or press <strong>To prompt</strong> on a request to start the question.</p>
 
   <h2 id="install">Install</h2>
-  <p>Requires Claude Code with mods (tested on 2.1.292), Node.js 18 or newer, and <code>openssl</code> (built into macOS). At the Claude Code prompt:</p>
-<pre><code>/plugin install proxy --marketplace legostin/claude-code-proxy</code></pre>
+  <p>Requires macOS, Claude Code 2.1.292 or newer, Node.js 18 or newer, and <code>openssl</code> (built into macOS). At the Claude Code prompt:</p>
+<pre><code>/plugin install wirepane --marketplace legostin/claude-code-proxy</code></pre>
   <p>Answer <code>y</code> to add the marketplace and pick a scope, then run <code>/proxy</code>.</p>
 
   <h2>FAQ</h2>
   <details><summary>Is it a replacement for Proxyman, Charles or mitmproxy?</summary><p>For everyday debugging of what an app sent and what came back, yes, without leaving Claude Code. Rules cover rewriting, mocking and throttling; there are no interactive breakpoints, HTTP/2 or gRPC.</p></details>
   <details><summary>Do I have to install the certificate on my Mac?</summary><p>Not for the separate browser, which trusts the proxy by SPKI hash. Safari, native macOS apps and the iOS Simulator need the CA trusted; the setup tabs give the commands.</p></details>
   <details><summary>Why do some requests show CERT?</summary><p>The client refused the proxy's certificate: its CA is not trusted yet, or the app pins its certificates. Finish the setup steps, or add the host to Hosts not to decrypt.</p></details>
-  <details><summary>Does my traffic leave my machine?</summary><p>No. The proxy listens on 127.0.0.1 unless you choose lan, recorded requests stay in ~/.claude/proxy-mod, and Claude reads a request only when it calls the tools.</p></details>
+  <details><summary>Does my traffic leave my machine?</summary><p>Only for the servers it was going to anyway. The proxy listens on 127.0.0.1 unless you choose lan, recorded requests stay in ~/.claude/proxy-mod, and Claude reads a request only when it calls the tools; then that request is part of the conversation.</p></details>
 
   <h2>Limits</h2>
   <ul class="limits">
@@ -227,7 +227,7 @@
   </ul>
 
   <footer>
-    proxy is MIT licensed · <a href="https://github.com/legostin/claude-code-proxy">source</a> · <a href="https://github.com/legostin/claude-code-proxy/blob/main/docs/design.md">design notes</a> · not affiliated with Anthropic, Proxyman, Charles or mitmproxy
+    Wirepane is MIT licensed · <a href="https://github.com/legostin/claude-code-proxy">source</a> · <a href="https://github.com/legostin/claude-code-proxy/blob/main/docs/design.md">design notes</a> · not affiliated with Anthropic, Proxyman, Charles or mitmproxy
   </footer>
 </main>
 </body>

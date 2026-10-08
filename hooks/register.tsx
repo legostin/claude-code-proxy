@@ -83,41 +83,41 @@ const STOPPED: ProxyStatus = {
   error: null,
 }
 
-const flowsAtom = atom({ plugin: 'proxy', key: 'flows' } as const, [] as ProxyFlow[])
-const statusAtom = atom({ plugin: 'proxy', key: 'status' } as const, STOPPED)
-const viewAtom = atom({ plugin: 'proxy', key: 'view' } as const, {
+const flowsAtom = atom({ plugin: 'wirepane', key: 'flows' } as const, [] as ProxyFlow[])
+const statusAtom = atom({ plugin: 'wirepane', key: 'status' } as const, STOPPED)
+const viewAtom = atom({ plugin: 'wirepane', key: 'view' } as const, {
   mode: 'list',
   selectedId: null,
   setupTab: 'browser',
   layout: 'list',
 } as ProxyView)
-const filterAtom = atom({ plugin: 'proxy', key: 'filter' } as const, '')
-const wantedAtom = atom({ plugin: 'proxy', key: 'wanted' } as const, false)
-const nextIdAtom = atom({ plugin: 'proxy', key: 'nextId' } as const, 1)
-const noticeAtom = atom({ plugin: 'proxy', key: 'notice' } as const, '')
+const filterAtom = atom({ plugin: 'wirepane', key: 'filter' } as const, '')
+const wantedAtom = atom({ plugin: 'wirepane', key: 'wanted' } as const, false)
+const nextIdAtom = atom({ plugin: 'wirepane', key: 'nextId' } as const, 1)
+const noticeAtom = atom({ plugin: 'wirepane', key: 'notice' } as const, '')
 /** Emulators this session pointed at the proxy, to point back on stop. */
-const emulatorsAtom = atom({ plugin: 'proxy', key: 'emulators' } as const, [] as string[])
+const emulatorsAtom = atom({ plugin: 'wirepane', key: 'emulators' } as const, [] as string[])
 /** The tree view's open nodes, by TreeNode id. */
-const expandedAtom = atom({ plugin: 'proxy', key: 'expanded' } as const, [] as string[])
+const expandedAtom = atom({ plugin: 'wirepane', key: 'expanded' } as const, [] as string[])
 /** The session's tracked domains; off or empty, every domain is tracked. */
-const trackingAtom = atom({ plugin: 'proxy', key: 'tracking' } as const, { enabled: false, patterns: [] } as ProxyTracking)
+const trackingAtom = atom({ plugin: 'wirepane', key: 'tracking' } as const, { enabled: false, patterns: [] } as ProxyTracking)
 /** Hosts that passed through untracked since the proxy started, with counts. */
-const skippedAtom = atom({ plugin: 'proxy', key: 'skipped' } as const, {} as Record<string, number>)
-const devicesAtom = atom({ plugin: 'proxy', key: 'devices' } as const, {
+const skippedAtom = atom({ plugin: 'wirepane', key: 'skipped' } as const, {} as Record<string, number>)
+const devicesAtom = atom({ plugin: 'wirepane', key: 'devices' } as const, {
   simulators: [],
   simulatorError: null,
   avds: [],
   android: [],
   androidError: null,
 } as ProxyDevices)
-const systemProxyAtom = atom({ plugin: 'proxy', key: 'systemProxy' } as const, { isOn: false, service: null, isOurs: false } as ProxySystemProxy)
-const caSimulatorsAtom = atom({ plugin: 'proxy', key: 'caSimulators' } as const, [] as string[])
-const busyAtom = atom({ plugin: 'proxy', key: 'busy' } as const, '')
+const systemProxyAtom = atom({ plugin: 'wirepane', key: 'systemProxy' } as const, { isOn: false, service: null, isOurs: false } as ProxySystemProxy)
+const caSimulatorsAtom = atom({ plugin: 'wirepane', key: 'caSimulators' } as const, [] as string[])
+const busyAtom = atom({ plugin: 'wirepane', key: 'busy' } as const, '')
 /** This mod's version, from its plugin.json: which copy the session runs. */
-const versionAtom = atom({ plugin: 'proxy', key: 'version' } as const, '')
-const macTrustAtom = atom({ plugin: 'proxy', key: 'macTrust' } as const, 'unknown' as 'unknown' | 'trusted' | 'untrusted')
+const versionAtom = atom({ plugin: 'wirepane', key: 'version' } as const, '')
+const macTrustAtom = atom({ plugin: 'wirepane', key: 'macTrust' } as const, 'unknown' as 'unknown' | 'trusted' | 'untrusted')
 /** The project's rules file as last read. */
-const rulesAtom = atom({ plugin: 'proxy', key: 'rules' } as const, { file: null, entries: [], fileErrors: [] } as ProxyRules)
+const rulesAtom = atom({ plugin: 'wirepane', key: 'rules' } as const, { file: null, entries: [], fileErrors: [] } as ProxyRules)
 
 // Every function that takes `$` lives in this file: the engine follows `$`
 // into functions of the hooks module itself, never across an import.
@@ -1523,9 +1523,9 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
   const kindName = (kind: string) => (kind === 'vpn' ? 'VPN' : kind === 'virtual' ? 'virtual machines' : 'another network')
   const setListen = (value: 'lan' | 'local') => async () => {
     // the engine reloads the mod with the new option; the proxy restarts on it
-    // the row's key as /config names it for this install ("proxy.listen", or a marketplace's spelling)
+    // the row's key as /config names it for this install ("wirepane.listen", or a marketplace's spelling)
     const rows = await $.config.list().catch(() => [])
-    const key = rows.find(row => /(^|[.:@])listen$/.test(row.key) && JSON.stringify(row.provider ?? '').includes('proxy'))?.key ?? 'proxy.listen'
+    const key = rows.find(row => /(^|[.:@])listen$/.test(row.key) && JSON.stringify(row.provider ?? '').includes('wirepane'))?.key ?? 'wirepane.listen'
     const result = await $.config.set({ key, value })
     await say($, 'deny' in result && result.deny ? `Could not change Listen on: ${result.deny}` : value === 'lan' ? 'Listening on the network now.' : 'Listening on this Mac only now.')
   }
@@ -1892,8 +1892,8 @@ async function drawRules($: EngineInterface, e: PaneEvent): Promise<RenderElemen
 
 // --- hooks ------------------------------------------------------------------------
 
-const LIST_TOOL = 'mcp__proxy__list_requests'
-const GET_TOOL = 'mcp__proxy__get_request'
+const LIST_TOOL = 'mcp__wirepane__list_requests'
+const GET_TOOL = 'mcp__wirepane__get_request'
 
 const FILTER_HELP =
   'space-separated terms that must all hold, a leading "-" negates one: free text (substring of the URL), ' +
@@ -2206,7 +2206,7 @@ export const register: Register = (on, raw) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, ($, e) => drawPane($, e, options))
 
-  on('tool.call', { tool: 'mcp__proxy__track_domains' }, async ($, e) => {
+  on('tool.call', { tool: 'mcp__wirepane__track_domains' }, async ($, e) => {
     const notes: string[] = []
     const list = (value: unknown) => (Array.isArray(value) ? value.map(String) : [])
     if (Array.isArray(e.set)) {
@@ -2237,11 +2237,11 @@ export const register: Register = (on, raw) => {
     return { result: lines.join('\n') }
   }).catch(() => ({ deny: 'proxy: could not change the tracked domains; try again.' }))
 
-  on('tool.call', { tool: 'mcp__proxy__list_rules' }, async $ => ({ result: await rulesText($) })).catch(() => ({
+  on('tool.call', { tool: 'mcp__wirepane__list_rules' }, async $ => ({ result: await rulesText($) })).catch(() => ({
     deny: 'proxy: could not read the rules file; try again.',
   }))
 
-  on('tool.call', { tool: 'mcp__proxy__add_rule' }, async ($, e) => {
+  on('tool.call', { tool: 'mcp__wirepane__add_rule' }, async ($, e) => {
     const rule = e.rule as Rule
     const errors = ruleErrors(rule)
     if (errors.length) return { result: `Not added:\n${errors.join('\n')}` }
@@ -2257,7 +2257,7 @@ export const register: Register = (on, raw) => {
     return { result: `Added ${rule.id}: ${describeRule(rule)}\n\n${await rulesText($)}` }
   }).catch(() => ({ deny: 'proxy: could not write the rules file; try again.' }))
 
-  on('tool.call', { tool: 'mcp__proxy__update_rule' }, async ($, e) => {
+  on('tool.call', { tool: 'mcp__wirepane__update_rule' }, async ($, e) => {
     const id = String(e.id)
     let changed: Rule | undefined
     let problems: string[] = []
@@ -2283,7 +2283,7 @@ export const register: Register = (on, raw) => {
     return { result: `Changed ${changed.id}: ${describeRule(changed)}\n\n${await rulesText($)}` }
   }).catch(() => ({ deny: 'proxy: could not write the rules file; try again.' }))
 
-  on('tool.call', { tool: 'mcp__proxy__remove_rule' }, async ($, e) => {
+  on('tool.call', { tool: 'mcp__wirepane__remove_rule' }, async ($, e) => {
     const id = String(e.id)
     const failure = await editRules($, rules => (rules.some(rule => rule.id === id) ? rules.filter(rule => rule.id !== id) : `No rule has the id ${id}.`))
     return { result: failure ? `Not removed: ${failure}` : `Removed ${id}.\n\n${await rulesText($)}` }

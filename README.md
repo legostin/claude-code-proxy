@@ -1,17 +1,36 @@
-# proxy: an HTTPS debugging proxy inside Claude Code
+# Wirepane: an HTTPS debugging proxy inside Claude Code
 
 [![CI](https://github.com/legostin/claude-code-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/legostin/claude-code-proxy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Claude Code mod](https://img.shields.io/badge/Claude%20Code-mod-d97757.svg)](https://claude.com/claude-code)
 
-**proxy** is a [Claude Code](https://claude.com/claude-code) mod (a plugin of function hooks).
+**Wirepane** is a [Claude Code](https://claude.com/claude-code) mod (a plugin of function hooks).
 It turns Claude Code into an HTTPS debugging proxy in the spirit of Proxyman, Charles or mitmproxy:
 it intercepts and decrypts the HTTP and HTTPS traffic of your browser, the iOS Simulator, an iPhone,
 the Android emulator or an Android phone. It shows every request in a filterable list, and lets
 Claude read the same traffic, so you can ask *"why does the login request return 401?"* and it
 looks at the real request and response.
 
-[Website](https://legostin.github.io/claude-code-proxy/) · [Install](#install) · [Design notes](docs/design.md)
+[Website](https://legostin.github.io/claude-code-proxy/) · [Install](#install) · [What it runs and changes](#what-it-runs-and-what-it-changes) · [Design notes](docs/design.md)
+
+## Install
+
+Requires macOS, Claude Code 2.1.292 or newer, Node.js 18 or newer, and `openssl` (built into
+macOS). At the Claude Code prompt:
+
+```
+/plugin install wirepane --marketplace legostin/claude-code-proxy
+```
+
+Answer `y` to add the marketplace and pick a scope. The same from a shell:
+
+```sh
+claude plugin marketplace add legostin/claude-code-proxy
+claude plugin install wirepane@wirepane
+```
+
+Then run `/proxy`: the proxy starts on `127.0.0.1:8899` and the pane opens. An empty list offers
+the ways in it found on this Mac.
 
 ```
 ● 127.0.0.1:8899 · 342 requests              [ Stop ]  View [ List ] [ Tree ]  [ Clear ] [ Setup ]
@@ -21,10 +40,24 @@ Filter host:*.api.example.com is:error
 CERT CONNECT gateway.icloud.com:443                                   0B     0ms
 ```
 
+The command takes:
+
+```
+/proxy            open the pane and start the proxy
+/proxy setup      set up a browser, iOS, Android, macOS or CLI client
+/proxy stop       stop it (and point Android devices back)
+/proxy clear      clear the list
+/proxy rules      the rules that change requests and responses
+/proxy track      the domains this session decrypts and records
+/proxy status     one line about its state
+/proxy tree       show the requests as a tree (host → path → requests)
+/proxy list       show them as a flat list
+```
+
 ## Why
 
 Debugging a mobile or web client usually means a separate proxy app, a certificate dance on every
-device, and copying requests into the chat by hand. **proxy** keeps all of it where you already
+device, and copying requests into the chat by hand. **Wirepane** keeps all of it where you already
 work:
 
 - **No separate app.** The proxy, its certificate authority and the request list live in Claude Code.
@@ -63,29 +96,6 @@ work:
 - A rules engine: delays, throttling, mocks, rewritten headers, URLs and bodies, status codes,
   dropped connections and scripts, chained by priority; managed in the pane and by Claude.
 - No dependencies: a Node.js sidecar and `openssl`, nothing to install from npm.
-
-## Install
-
-Requires Claude Code with mods (tested on 2.1.292), Node.js 18 or newer, and `openssl` (built into
-macOS). At the Claude Code prompt:
-
-```
-/plugin install proxy --marketplace legostin/claude-code-proxy
-```
-
-Answer `y` to add the marketplace and pick a scope. Then:
-
-```
-/proxy            open the pane and start the proxy
-/proxy setup      set up a browser, iOS, Android, macOS or CLI client
-/proxy stop       stop it (and point Android devices back)
-/proxy clear      clear the list
-/proxy rules      the rules that change requests and responses
-/proxy track      the domains this session decrypts and records
-/proxy status     one line about its state
-/proxy tree       show the requests as a tree (host → path → requests)
-/proxy list       show them as a flat list
-```
 
 ## Set up a client
 
@@ -133,7 +143,7 @@ The **Domains** view (`d`) lists the patterns with how many requests each caught
 list on and off, and shows the hosts that passed through untracked, busiest first, each with
 **track** and **track \*.domain** buttons: connect the phone, use the app, and pick its hosts from
 there. The list belongs to the Claude Code session and comes back with `--resume`. Claude manages
-it with `mcp__proxy__track_domains`.
+it with `mcp__wirepane__track_domains`.
 
 ## Rules: change requests and responses
 
@@ -219,11 +229,11 @@ For example, `host:*.api.com -type:img is:error`.
 
 | Tool | What the model gets |
 | --- | --- |
-| `mcp__proxy__list_requests({ filter?, limit? })` | The proxy's state and one line per request: id, method, status, URL, size, time, type, error. |
-| `mcp__proxy__get_request({ id, max_body_chars? })` | One request in full: URL, status, timing, client, error, request and response headers, decoded bodies, what the rules did. |
-| `mcp__proxy__track_domains({ add?, remove?, set?, enabled? })` | The session's tracked domains, and the untracked hosts the proxy has seen, busiest first. |
-| `mcp__proxy__list_rules()` | The rules in order, on or off, what each does in words, errors, how many requests each changed. |
-| `mcp__proxy__add_rule({ rule, position? })`, `update_rule({ id, changes?, enabled?, position? })`, `remove_rule({ id })` | Write the rules file; the proxy applies the change at once. |
+| `mcp__wirepane__list_requests({ filter?, limit? })` | The proxy's state and one line per request: id, method, status, URL, size, time, type, error. |
+| `mcp__wirepane__get_request({ id, max_body_chars? })` | One request in full: URL, status, timing, client, error, request and response headers, decoded bodies, what the rules did. |
+| `mcp__wirepane__track_domains({ add?, remove?, set?, enabled? })` | The session's tracked domains, and the untracked hosts the proxy has seen, busiest first. |
+| `mcp__wirepane__list_rules()` | The rules in order, on or off, what each does in words, errors, how many requests each changed. |
+| `mcp__wirepane__add_rule({ rule, position? })`, `update_rule({ id, changes?, enabled?, position? })`, `remove_rule({ id })` | Write the rules file; the proxy applies the change at once. |
 
 Ask things like *"list the failed requests to api.example.com and tell me what they have in
 common"* or *"compare request #12 with #14"*. **To prompt** in a request's detail starts such a
@@ -231,7 +241,7 @@ question for you.
 
 ## Options
 
-Set them in `/config` or with `/plugin configure proxy@proxy`.
+Set them in `/config`, or in `/plugin` → **Installed** → **wirepane** → **Configure options**.
 
 | Option | Default | |
 | --- | --- | --- |
@@ -256,6 +266,54 @@ machine (RSA-2048, kept in `~/.claude/proxy-mod/ca`, the key readable by you onl
 summaries come back on stdout; headers and bodies stay on disk and are read only when you open a
 request or Claude asks for one. [docs/design.md](docs/design.md) has the details.
 
+## What it runs and what it changes
+
+Wirepane sends nothing of its own anywhere: no telemetry, no update checks, no downloads. The only
+connections it makes are the ones it relays for the clients you point at it, to the servers those
+clients asked for. A request reaches Claude only when Claude calls one of the
+[tools](#tools-for-claude); what it reads then becomes part of the conversation, like a file Claude
+reads.
+
+While the proxy is on, it runs:
+
+- `node sidecar/proxy.mjs`, the proxy itself, on `127.0.0.1` (on the network too in `lan` mode),
+  stopped with `kill` when you stop the proxy or the session ends.
+- `openssl`, to make the CA and a certificate for each host.
+- `route`, `networksetup` and `scutil`, to find this Mac's addresses and read the system proxy, and
+  `ps` and `lsof`, to tell Claude's own connections apart so that they are tunnelled, never decrypted.
+
+Only when you press the button for it:
+
+| In the pane | Runs | Changes |
+| --- | --- | --- |
+| **macOS → Turn on for this Mac**, **iOS → Use** | `networksetup`, through `osascript` when macOS asks for an administrator | The system proxy, put back when the proxy stops |
+| **macOS → Trust CA on this Mac** | `security add-trusted-cert`, which macOS asks you to confirm | The CA in your login keychain |
+| **iOS → Use**, **Boot & use** | `xcrun simctl`, `open -a Simulator` | The CA in that simulator's keychain |
+| **Browser → Open** | `open -na <browser>` with a profile of its own | Nothing outside `~/.claude/proxy-mod/browser` |
+| **Android → Start through the proxy** | `emulator -avd <name> -http-proxy …`, `adb` | Nothing: the proxy setting lasts for that run |
+| **Android → proxy**, **Point USB phones at the proxy** | `adb shell settings put global http_proxy`, `adb reverse` | The device's proxy, put back by **Revert** and when the proxy stops |
+
+Files it writes:
+
+- `~/.claude/proxy-mod/ca` and `certs`: the CA (RSA-2048, the key readable by you only) and the
+  certificates made from it.
+- `~/.claude/proxy-mod/flows/<session>`: the headers and bodies of recorded requests. They can hold
+  the passwords, tokens and personal data of the apps you debug. A session's folder is deleted two
+  days after its last use.
+- `~/.claude/proxy-mod/sessions`, `trusted-scripts.json` and `system-proxy-backup.json`: each
+  session's tracked domains, the rule scripts you approved, and the system proxy settings to put
+  back.
+- `<project>/.claude/proxy-rules.json`, once you or Claude add a rule.
+
+## Uninstall
+
+1. `/proxy stop` puts back the system proxy and the Android devices it pointed here.
+2. `/plugin uninstall wirepane@wirepane`, or **Uninstall** in `/plugin` → **Installed**.
+3. Remove the CA where you trusted it: in Keychain Access on the Mac (search for *Claude Code Proxy
+   CA*), under **Settings → General → VPN & Device Management** on an iPhone, and under user
+   credentials on Android.
+4. `rm -rf ~/.claude/proxy-mod` deletes the CA, the recorded requests and the browser profiles.
+
 ## FAQ
 
 **Is it a replacement for Proxyman, Charles or mitmproxy?**
@@ -271,8 +329,9 @@ The client refused the proxy's certificate. Either its CA is not trusted yet (fi
 steps), or the app pins its certificates; add such hosts to *Hosts not to decrypt*.
 
 **Does my traffic leave my machine?**
-No. The proxy listens on `127.0.0.1` unless you choose `lan`, and recorded requests stay in
-`~/.claude/proxy-mod`. Claude reads a request only when it calls the tools.
+Only for the servers it was going to anyway. The proxy listens on `127.0.0.1` unless you choose
+`lan`, and recorded requests stay in `~/.claude/proxy-mod`. Claude reads a request only when it
+calls the tools, and then that request is part of the conversation.
 
 **Does it capture Claude Code's own traffic, or the commands Claude runs?**
 No. It captures clients you point at it.
@@ -291,7 +350,7 @@ No. It captures clients you point at it.
 ```sh
 node --test sidecar/proxy.spec.mjs    # the proxy, against local upstreams, driven by curl
 claude plugin test .                  # the logic, the pane (terminal and desktop) and the tools
-claude plugin validate .
+claude plugin validate --strict .
 ```
 
 To run a working copy: `claude --plugin-dir /path/to/claude-code-proxy`.

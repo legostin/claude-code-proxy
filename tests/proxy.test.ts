@@ -167,7 +167,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: start lists the captured requests, newest first, and filters them`, SLOW, async ($, on) => {
     const clock = mock.clock(on)
     const machine = fakeMachine(on, clock)
-    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    const ui = await $.ui.mount({ plugin: 'wirepane', surface, ...PANE })
 
     expect(await ui.find({ text: /stopped/ })).toBeDefined()
     await ui.press({ key: 'toggle' })
@@ -203,7 +203,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: a row opens its detail with headers and the decoded body`, SLOW, async ($, on) => {
     const clock = mock.clock(on)
     fakeMachine(on, clock)
-    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    const ui = await $.ui.mount({ plugin: 'wirepane', surface, ...PANE })
     await ui.press({ key: 'toggle' })
     await clock.advance(250)
     await ui.redraw()
@@ -227,7 +227,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: setup shows the tabs, the CA and each tab's actions`, SLOW, async ($, on) => {
     const clock = mock.clock(on)
     fakeMachine(on, clock)
-    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    const ui = await $.ui.mount({ plugin: 'wirepane', surface, ...PANE })
     await ui.press({ key: 'toggle' })
     await clock.advance(250)
     await ui.press({ key: 'setup' })
@@ -251,7 +251,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: setup names the exact address a phone enters, and switches to LAN`, SLOW, async ($, on) => {
     const clock = mock.clock(on)
     const machine = fakeMachine(on, clock)
-    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    const ui = await $.ui.mount({ plugin: 'wirepane', surface, ...PANE })
     await ui.press({ key: 'toggle' })
     await clock.advance(250)
     await ui.press({ key: 'setup' })
@@ -264,7 +264,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ text: /not 10\.20\.133\.214 \(VPN\)/ })).toBeDefined()
     expect(await ui.find({ key: 'copy-ip' })).toBeDefined()
     await ui.press({ key: 'listen-lan' })
-    expect(machine.configSets).toEqual([['proxy.listen', 'lan']])
+    expect(machine.configSets).toEqual([['wirepane.listen', 'lan']])
 
     await ui.press({ key: 'tab-android' })
     await ui.press({ key: 'sub-virtual' })
@@ -278,7 +278,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: the tree groups requests by host and path`, SLOW, async ($, on) => {
     const clock = mock.clock(on)
     fakeMachine(on, clock)
-    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    const ui = await $.ui.mount({ plugin: 'wirepane', surface, ...PANE })
     await ui.press({ key: 'toggle' })
     await clock.advance(250)
     expect((await ui.find({ key: 'layout-list' }))?.props.variant).toBe('primary')
@@ -316,7 +316,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: on LAN the phone tabs show a QR code of the setup address`, { ...SLOW, options: { listen: 'lan' } }, async ($, on) => {
     const clock = mock.clock(on)
     fakeMachine(on, clock)
-    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    const ui = await $.ui.mount({ plugin: 'wirepane', surface, ...PANE })
     await ui.press({ key: 'toggle' })
     await clock.advance(250)
     await ui.press({ key: 'setup' })
@@ -338,7 +338,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: listening on this Mac only, the code shows with what to do first`, SLOW, async ($, on) => {
     const clock = mock.clock(on)
     fakeMachine(on, clock)
-    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    const ui = await $.ui.mount({ plugin: 'wirepane', surface, ...PANE })
     await ui.press({ key: 'toggle' })
     await clock.advance(250)
     await ui.press({ key: 'setup' })
@@ -375,7 +375,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: the rules view lists, toggles, reorders and approves rules`, SLOW, async ($, on) => {
     const clock = mock.clock(on)
     const machine = fakeMachine(on, clock, { [RULES_FILE]: JSON.stringify(RULES) })
-    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    const ui = await $.ui.mount({ plugin: 'wirepane', surface, ...PANE })
     await ui.press({ key: 'rules' })
 
     expect(await ui.find({ text: /4 rules, 2 on/ })).toBeDefined()
@@ -410,34 +410,34 @@ test('Claude adds, changes and removes rules through the tools', SLOW, async ($,
   const machine = fakeMachine(on, clock)
   const rule = { id: 'auth', match: { host: '*.example.com' }, request: [{ type: 'setHeader', name: 'Authorization', value: 'Bearer t' }] }
 
-  const added = String((await $.tool.call({ tool: 'mcp__proxy__add_rule', rule })).result)
+  const added = String((await $.tool.call({ tool: 'mcp__wirepane__add_rule', rule })).result)
   expect(added).toContain('Added auth: host *.example.com → before sending: set header Authorization: Bearer t')
   expect(JSON.parse(machine.files[RULES_FILE]!)).toEqual({ rules: [rule] })
 
-  const invalid = String((await $.tool.call({ tool: 'mcp__proxy__add_rule', rule: { id: 'x', request: [{ type: 'delay' }] } })).result)
+  const invalid = String((await $.tool.call({ tool: 'mcp__wirepane__add_rule', rule: { id: 'x', request: [{ type: 'delay' }] } })).result)
   expect(invalid).toContain('Not added')
   expect(invalid).toContain('ms must be a number')
-  const duplicate = String((await $.tool.call({ tool: 'mcp__proxy__add_rule', rule })).result)
+  const duplicate = String((await $.tool.call({ tool: 'mcp__wirepane__add_rule', rule })).result)
   expect(duplicate).toContain('exists')
 
   const scripted = { id: 'first', response: [{ type: 'script', code: 'res.status = 299' }] }
-  await $.tool.call({ tool: 'mcp__proxy__add_rule', rule: scripted, position: 1 })
+  await $.tool.call({ tool: 'mcp__wirepane__add_rule', rule: scripted, position: 1 })
   const both = JSON.parse(machine.files[RULES_FILE]!) as { rules: { id: string }[] }
   expect(both.rules.map(r => r.id)).toEqual(['first', 'auth'])
   // a script Claude adds is approved with it
   expect(JSON.parse(machine.files[TRUST_FILE]!).sha256).toEqual([await sha256Hex('res.status = 299')])
 
-  const changed = String((await $.tool.call({ tool: 'mcp__proxy__update_rule', id: 'auth', enabled: false, position: 1, changes: { name: 'Auth header' } })).result)
+  const changed = String((await $.tool.call({ tool: 'mcp__wirepane__update_rule', id: 'auth', enabled: false, position: 1, changes: { name: 'Auth header' } })).result)
   expect(changed).toContain('Changed auth')
   const after = JSON.parse(machine.files[RULES_FILE]!) as { rules: { id: string; enabled?: boolean; name?: string }[] }
   expect(after.rules.map(r => r.id)).toEqual(['auth', 'first'])
   expect(after.rules[0]).toMatchObject({ enabled: false, name: 'Auth header' })
 
-  const listed = String((await $.tool.call({ tool: 'mcp__proxy__list_rules' })).result)
+  const listed = String((await $.tool.call({ tool: 'mcp__wirepane__list_rules' })).result)
   expect(listed).toContain('1. auth [off] Auth header')
   expect(listed).toContain('2. first [on]')
 
-  const removed = String((await $.tool.call({ tool: 'mcp__proxy__remove_rule', id: 'auth' })).result)
+  const removed = String((await $.tool.call({ tool: 'mcp__wirepane__remove_rule', id: 'auth' })).result)
   expect(removed).toContain('Removed auth.')
   expect((JSON.parse(machine.files[RULES_FILE]!) as { rules: unknown[] }).rules).toHaveLength(1)
 })
@@ -448,7 +448,7 @@ test('a request a rule changed is marked in the list and explained in its detail
   machine.files[`${RUN_DIR}/2.json`] = JSON.stringify({ ...JSON.parse(FILES[`${RUN_DIR}/2.json`]!), ruleLog: ['mock-login: answer 500'] })
   ruledFlow = true
   try {
-    const ui = await $.ui.mount({ plugin: 'proxy', surface: 'terminal', ...PANE })
+    const ui = await $.ui.mount({ plugin: 'wirepane', surface: 'terminal', ...PANE })
     await ui.press({ key: 'toggle' })
     await clock.advance(250)
     await ui.redraw()
@@ -473,7 +473,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: the domains view tracks what you add and offers what passed through`, SLOW, async ($, on) => {
     const clock = mock.clock(on)
     const machine = fakeMachine(on, clock)
-    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    const ui = await $.ui.mount({ plugin: 'wirepane', surface, ...PANE })
     await ui.press({ key: 'toggle' })
     await clock.advance(250)
     expect(machine.spawned[0]).toContain('--tracking')
@@ -506,17 +506,17 @@ for (const surface of ['terminal', 'desktop'] as const) {
 test('Claude tracks domains through the tool, and sees what passed through', SLOW, async ($, on) => {
   const clock = mock.clock(on)
   const machine = fakeMachine(on, clock)
-  const ui = await $.ui.mount({ plugin: 'proxy', surface: 'terminal', ...PANE })
+  const ui = await $.ui.mount({ plugin: 'wirepane', surface: 'terminal', ...PANE })
   await ui.press({ key: 'toggle' })
   await clock.advance(250)
-  const answer = String((await $.tool.call({ tool: 'mcp__proxy__track_domains', add: ['*.kolesa.kz', 'not a host!'] })).result)
+  const answer = String((await $.tool.call({ tool: 'mcp__wirepane__track_domains', add: ['*.kolesa.kz', 'not a host!'] })).result)
   expect(answer).toContain('Not host patterns: not a host!.')
   expect(answer).toContain('only *.kolesa.kz are decrypted and recorded')
   expect(answer).toContain('gateway.icloud.com ×12, api.kolesa.kz ×3')
   expect(JSON.parse(machine.files[TRACKING_FILE]!)).toEqual({ enabled: true, patterns: ['*.kolesa.kz'] })
-  const listed = String((await $.tool.call({ tool: 'mcp__proxy__list_requests' })).result)
+  const listed = String((await $.tool.call({ tool: 'mcp__wirepane__list_requests' })).result)
   expect(listed).toContain('Only *.kolesa.kz are decrypted and recorded')
-  const off = String((await $.tool.call({ tool: 'mcp__proxy__track_domains', enabled: false })).result)
+  const off = String((await $.tool.call({ tool: 'mcp__wirepane__track_domains', enabled: false })).result)
   expect(off).toContain('The list is off')
   await ui.press({ key: 'toggle' })
   await clock.advance(200)
@@ -539,7 +539,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: a simulator is booted, given the CA and put behind the system proxy in one press`, SLOW, async ($, on) => {
     const clock = mock.clock(on)
     const machine = fakeMachine(on, clock)
-    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    const ui = await $.ui.mount({ plugin: 'wirepane', surface, ...PANE })
     await ui.press({ key: 'toggle' })
     await clock.advance(250)
     await ui.press({ key: 'setup' })
@@ -579,7 +579,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: emulators are listed and started through the proxy`, SLOW, async ($, on) => {
     const clock = mock.clock(on)
     const machine = fakeMachine(on, clock)
-    const ui = await $.ui.mount({ plugin: 'proxy', surface, ...PANE })
+    const ui = await $.ui.mount({ plugin: 'wirepane', surface, ...PANE })
     await ui.press({ key: 'toggle' })
     await clock.advance(250)
     await ui.press({ key: 'setup' })
@@ -603,7 +603,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 test('the macOS tab trusts the CA in one press', SLOW, async ($, on) => {
   const clock = mock.clock(on)
   const machine = fakeMachine(on, clock)
-  const ui = await $.ui.mount({ plugin: 'proxy', surface: 'terminal', ...PANE })
+  const ui = await $.ui.mount({ plugin: 'wirepane', surface: 'terminal', ...PANE })
   await ui.press({ key: 'toggle' })
   await clock.advance(250)
   await ui.press({ key: 'setup' })
@@ -622,7 +622,7 @@ test('the macOS tab trusts the CA in one press', SLOW, async ($, on) => {
 test('an empty list offers the one-press ways in', SLOW, async ($, on) => {
   const clock = mock.clock(on)
   const machine = fakeMachine(on, clock, {}, true)
-  const ui = await $.ui.mount({ plugin: 'proxy', surface: 'terminal', ...PANE })
+  const ui = await $.ui.mount({ plugin: 'wirepane', surface: 'terminal', ...PANE })
   expect(await ui.find({ key: 'qs-start' })).toBeDefined()
   await ui.press({ key: 'toggle' })
   await clock.advance(250)
@@ -647,7 +647,7 @@ test('an empty list offers the one-press ways in', SLOW, async ($, on) => {
 test('stopping the proxy puts the system proxy back', SLOW, async ($, on) => {
   const clock = mock.clock(on)
   const machine = fakeMachine(on, clock)
-  const ui = await $.ui.mount({ plugin: 'proxy', surface: 'terminal', ...PANE })
+  const ui = await $.ui.mount({ plugin: 'wirepane', surface: 'terminal', ...PANE })
   await ui.press({ key: 'toggle' })
   await clock.advance(250)
   await ui.press({ key: 'setup' })
@@ -666,18 +666,18 @@ test('stopping the proxy puts the system proxy back', SLOW, async ($, on) => {
 test('the tools list and show captured requests for the model', SLOW, async ($, on) => {
   const clock = mock.clock(on)
   fakeMachine(on, clock)
-  const ui = await $.ui.mount({ plugin: 'proxy', surface: 'terminal', ...PANE })
+  const ui = await $.ui.mount({ plugin: 'wirepane', surface: 'terminal', ...PANE })
   await ui.press({ key: 'toggle' })
   await clock.advance(250)
 
-  const listed = await $.tool.call({ tool: 'mcp__proxy__list_requests', filter: 'method:POST' })
+  const listed = await $.tool.call({ tool: 'mcp__wirepane__list_requests', filter: 'method:POST' })
   const listText = String(listed.result)
   expect(listText).toContain('Proxy is running on 127.0.0.1:8899; 3 requests captured.')
   expect(listText).toContain('1 match "method:POST"')
   expect(listText).toContain('#2  POST    401  https://api.example.com/v1/login')
   expect(listText).not.toContain('#1 ')
 
-  const shown = await $.tool.call({ tool: 'mcp__proxy__get_request', id: 2 })
+  const shown = await $.tool.call({ tool: 'mcp__wirepane__get_request', id: 2 })
   const showText = String(shown.result)
   expect(showText).toContain('#2 POST https://api.example.com/v1/login')
   expect(showText).toContain('status: 401 Unauthorized')
@@ -685,7 +685,7 @@ test('the tools list and show captured requests for the model', SLOW, async ($, 
   expect(showText).toContain('{\n  "user": "tester"\n}')
   expect(showText).toContain('"error": "invalid_credentials"')
 
-  const missing = await $.tool.call({ tool: 'mcp__proxy__get_request', id: 99 })
+  const missing = await $.tool.call({ tool: 'mcp__wirepane__get_request', id: 99 })
   expect(String(missing.result)).toContain('No captured request #99')
   await ui.press({ key: 'toggle' })
   await clock.advance(200)

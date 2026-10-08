@@ -107,7 +107,7 @@ export type ProxyView = {
 
 declare module 'claude-code' {
   interface PluginState {
-    proxy: {
+    wirepane: {
       flows: ProxyFlow[]
       status: ProxyStatus
       view: ProxyView

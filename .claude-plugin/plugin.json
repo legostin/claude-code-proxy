@@ -1,7 +1,8 @@
 {
-  "name": "proxy",
-  "version": "0.6.0",
-  "description": "An HTTPS debugging proxy inside Claude Code: intercepts browser, iOS and Android traffic with its own CA, setup guides, a filterable request list and tools for Claude.",
+  "name": "wirepane",
+  "displayName": "Wirepane",
+  "version": "0.7.0",
+  "description": "An HTTPS debugging proxy inside Claude Code on macOS: intercepts browser, iOS and Android traffic with its own CA, setup guides, a filterable request list and tools for Claude.",
   "author": {
     "name": "Legostin Vyacheslav",
     "url": "https://github.com/legostin"

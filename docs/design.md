@@ -1,4 +1,4 @@
-# proxy: Proxyman inside Claude Code
+# Wirepane (first named proxy): Proxyman inside Claude Code
 
 Date: 2026-10-07. Status: approved and built.
 
@@ -102,8 +102,8 @@ all hold, a leading `-` negates one; free text is a substring of the URL;
 `host:*.example.com`, `path:`, `type:json|html|xml|js|css|img|font|media|text|form|ws|tunnel|other`,
 `is:error|ok|pending|tunnel|ws|https|rejected`, `client:`.
 
-Tools: `mcp__proxy__list_requests({ filter?, limit=50 })`, the proxy's state
-and a table; `mcp__proxy__get_request({ id, max_body_chars=20000 })`, headers
+Tools: `mcp__wirepane__list_requests({ filter?, limit=50 })`, the proxy's state
+and a table; `mcp__wirepane__get_request({ id, max_body_chars=20000 })`, headers
 and decoded bodies, cut to length.
 
 ## Errors
