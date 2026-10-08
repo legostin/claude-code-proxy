@@ -52,7 +52,7 @@ export function safeHost(host) {
 // X.509 holds a common name to 64 characters; a machine's name can be longer.
 export function caCommonName(machine) {
   const short = String(machine).split('.')[0].replace(/[^\w-]/g, '') || 'local'
-  const prefix = 'Claude Code Proxy CA ('
+  const prefix = 'Wirepane CA ('
   return `${prefix}${short.slice(0, 64 - prefix.length - 1)})`
 }
 
@@ -74,7 +74,7 @@ export async function ensureCA(dataDir) {
         'prompt=no',
         '[dn]',
         `CN=${name}`,
-        'O=Claude Code Proxy',
+        'O=Wirepane',
         '[v3_ca]',
         'basicConstraints=critical,CA:TRUE',
         'keyUsage=critical,keyCertSign,cRLSign',
@@ -183,7 +183,7 @@ export function mobileConfig(ca) {
     return `${b.slice(0, 8)}-${b.slice(8, 12)}-${b.slice(12, 16)}-${b.slice(16, 20)}-${b.slice(20)}`
   }
   const escape = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
-  const name = escape(ca.subject.match(/CN=([^,]+)/)?.[1] ?? 'Claude Code Proxy CA')
+  const name = escape(ca.subject.match(/CN=([^,]+)/)?.[1] ?? 'Wirepane CA')
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -191,18 +191,18 @@ export function mobileConfig(ca) {
   <key>PayloadContent</key>
   <array>
     <dict>
-      <key>PayloadCertificateFileName</key><string>claude-code-proxy-ca.cer</string>
+      <key>PayloadCertificateFileName</key><string>wirepane-ca.cer</string>
       <key>PayloadContent</key><data>${ca.caDer.toString('base64')}</data>
-      <key>PayloadDescription</key><string>Adds the Claude Code Proxy root CA</string>
+      <key>PayloadDescription</key><string>Adds the Wirepane root CA</string>
       <key>PayloadDisplayName</key><string>${name}</string>
-      <key>PayloadIdentifier</key><string>com.claude-code.proxy.ca.cert</string>
+      <key>PayloadIdentifier</key><string>io.github.legostin.wirepane.ca.cert</string>
       <key>PayloadType</key><string>com.apple.security.root</string>
       <key>PayloadUUID</key><string>${uuid()}</string>
       <key>PayloadVersion</key><integer>1</integer>
     </dict>
   </array>
   <key>PayloadDisplayName</key><string>${name}</string>
-  <key>PayloadIdentifier</key><string>com.claude-code.proxy.ca</string>
+  <key>PayloadIdentifier</key><string>io.github.legostin.wirepane.ca</string>
   <key>PayloadRemovalDisallowed</key><false/>
   <key>PayloadType</key><string>Configuration</string>
   <key>PayloadUUID</key><string>${uuid()}</string>

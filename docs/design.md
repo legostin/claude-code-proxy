@@ -48,7 +48,7 @@ mod (sandbox) ──$.process.spawn──▶ node sidecar/proxy.mjs ◀── :8
 - A direct (origin-form) request to the port, or any request to
   `http://claude.proxy/`, gets the setup page and the CA: `/` (HTML),
   `/ca.pem`, `/ca.crt` (DER), `/ca.mobileconfig`.
-- Certificates: the CA is RSA-2048, CN "Claude Code Proxy CA (<host>)",
+- Certificates: the CA is RSA-2048, CN "Wirepane CA (<host>)",
   825 days, key mode 0600. Leaves share one key, one certificate per host
   (SAN DNS or IP, 365 days, serverAuth), cached on disk, one issue per host
   however many connections ask at once.

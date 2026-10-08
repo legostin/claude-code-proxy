@@ -7,20 +7,20 @@
 <meta name="description" content="A Claude Code mod that intercepts and decrypts HTTPS traffic from your browser, iOS Simulator, iPhone and Android, lists every request with a filter, and lets Claude read the real requests and responses. A Proxyman and Charles alternative inside Claude Code.">
 <meta name="keywords" content="Claude Code, Claude Code plugin, Claude Code mod, HTTPS proxy, MITM proxy, debugging proxy, intercept HTTPS traffic, Proxyman alternative, Charles Proxy alternative, mitmproxy, iOS Simulator proxy, Android emulator proxy, debug network requests, AI coding agent">
 <meta name="author" content="Legostin Vyacheslav">
-<link rel="canonical" href="https://legostin.github.io/claude-code-proxy/">
+<link rel="canonical" href="https://legostin.github.io/wirepane/">
 <meta property="og:type" content="website">
-<meta property="og:site_name" content="claude-code-proxy">
+<meta property="og:site_name" content="Wirepane">
 <meta property="og:title" content="Wirepane: an HTTPS debugging proxy inside Claude Code">
 <meta property="og:description" content="Intercept and decrypt HTTPS from your browser, iOS and Android, filter the requests, and let Claude read them. No separate proxy app.">
-<meta property="og:url" content="https://legostin.github.io/claude-code-proxy/">
-<meta property="og:image" content="https://legostin.github.io/claude-code-proxy/og.png">
+<meta property="og:url" content="https://legostin.github.io/wirepane/">
+<meta property="og:image" content="https://legostin.github.io/wirepane/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Wirepane for Claude Code: a request list with 401 and 503 rows and a filter">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Wirepane: an HTTPS debugging proxy inside Claude Code">
 <meta name="twitter:description" content="Intercept HTTPS from your browser, iOS and Android, and let Claude read the real requests and responses.">
-<meta name="twitter:image" content="https://legostin.github.io/claude-code-proxy/og.png">
+<meta name="twitter:image" content="https://legostin.github.io/wirepane/og.png">
 <meta name="theme-color" content="#0f1115">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='7' fill='%23d97757'/%3E%3Cpath d='M8 12h12l-3-3M24 20H12l3 3' stroke='%23fff' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <script type="application/ld+json">
@@ -30,8 +30,8 @@
   "name": "Wirepane",
   "alternateName": "claude-code-proxy",
   "description": "A Claude Code mod that intercepts and decrypts HTTP and HTTPS traffic from a browser, the iOS Simulator, an iPhone, the Android emulator or an Android phone, lists every request with a filter, and gives Claude tools to read the requests and responses.",
-  "url": "https://legostin.github.io/claude-code-proxy/",
-  "codeRepository": "https://github.com/legostin/claude-code-proxy",
+  "url": "https://legostin.github.io/wirepane/",
+  "codeRepository": "https://github.com/legostin/wirepane",
   "programmingLanguage": ["TypeScript", "JavaScript"],
   "runtimePlatform": "Node.js",
   "operatingSystem": "macOS",
@@ -132,7 +132,7 @@
     <h1>An HTTPS debugging proxy inside Claude Code</h1>
     <p class="lead"><strong>Wirepane</strong> intercepts and decrypts the HTTP and HTTPS traffic of your browser, the iOS Simulator, an iPhone, the Android emulator or an Android phone. Every request lands in a filterable list, and Claude reads the same traffic, so <em>"why does login return 401?"</em> gets answered from the real request and response.</p>
     <div class="actions">
-      <a class="btn primary" href="https://github.com/legostin/claude-code-proxy">View on GitHub</a>
+      <a class="btn primary" href="https://github.com/legostin/wirepane">View on GitHub</a>
       <a class="btn" href="#install">Install</a>
       <a class="btn" href="#clients">Set up a client</a>
     </div>
@@ -209,7 +209,7 @@
 
   <h2 id="install">Install</h2>
   <p>Requires macOS, Claude Code 2.1.292 or newer, and <code>openssl</code> (built into macOS). The proxy runs on Node.js 18 or newer, which it finds by itself; with none, the pane offers to install it. At the Claude Code prompt:</p>
-<pre><code>/plugin install wirepane --marketplace legostin/claude-code-proxy</code></pre>
+<pre><code>/plugin install wirepane --marketplace legostin/wirepane</code></pre>
   <p>Answer <code>y</code> to add the marketplace and pick a scope, then run <code>/proxy</code>.</p>
 
   <h2>FAQ</h2>
@@ -227,7 +227,7 @@
   </ul>
 
   <footer>
-    Wirepane is MIT licensed · <a href="https://github.com/legostin/claude-code-proxy">source</a> · <a href="https://github.com/legostin/claude-code-proxy/blob/main/docs/design.md">design notes</a> · not affiliated with Anthropic, Proxyman, Charles or mitmproxy
+    Wirepane is MIT licensed · <a href="https://github.com/legostin/wirepane">source</a> · <a href="https://github.com/legostin/wirepane/blob/main/docs/design.md">design notes</a> · not affiliated with Anthropic, Proxyman, Charles or mitmproxy
   </footer>
 </main>
 </body>

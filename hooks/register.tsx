@@ -2131,7 +2131,7 @@ export const register: Register = (on, raw) => {
     await $.tool.register({
       name: 'list_requests',
       description:
-        'List the HTTP(S) requests captured by the Claude Code proxy the person runs with /proxy for their browser, iOS simulator/iPhone and Android emulator/phone. ' +
+        'List the HTTP(S) requests captured by Wirepane, the proxy the person runs with /proxy for their browser, iOS simulator/iPhone and Android emulator/phone. ' +
         'Returns the proxy status, then one line per request, oldest first: #id method status url response-size duration type, and the error if one. ' +
         'Status CERT means the client refused the proxy certificate. ' +
         `filter: ${FILTER_HELP}.`,

@@ -277,7 +277,7 @@ ${setupCommands(facts).env}
 }
 
 export function caName(facts: SetupFacts): string {
-  return facts.status.ca?.subject.match(/CN=([^,]+)/)?.[1] ?? 'Claude Code Proxy CA'
+  return facts.status.ca?.subject.match(/CN=([^,]+)/)?.[1] ?? 'Wirepane CA'
 }
 
 /** The oldest Node the sidecar runs on. */

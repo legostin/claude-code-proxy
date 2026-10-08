@@ -1,14 +1,14 @@
 {
   "name": "wirepane",
   "displayName": "Wirepane",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "An HTTPS debugging proxy inside Claude Code on macOS: intercepts browser, iOS and Android traffic with its own CA, setup guides, a filterable request list and tools for Claude.",
   "author": {
     "name": "Legostin Vyacheslav",
     "url": "https://github.com/legostin"
   },
-  "homepage": "https://legostin.github.io/claude-code-proxy/",
-  "repository": "https://github.com/legostin/claude-code-proxy",
+  "homepage": "https://legostin.github.io/wirepane/",
+  "repository": "https://github.com/legostin/wirepane",
   "license": "MIT",
   "keywords": [
     "android",

@@ -21,7 +21,7 @@ const READY = {
   runDir: RUN_DIR,
   ca: {
     path: CA_PATH,
-    subject: 'CN=Claude Code Proxy CA (tester), O=Claude Code Proxy',
+    subject: 'CN=Wirepane CA (tester), O=Wirepane',
     fingerprint256: 'AB:CD',
     validTo: 'Jan  1 00:00:00 2029 GMT',
     spki: ['leafspki=', 'caspki='],

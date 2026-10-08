@@ -121,9 +121,9 @@ describe('sidecar', () => {
   test('keeps the CA name within the 64 characters X.509 allows', () => {
     const long = caCommonName('Mac-1759823044-runner-with-a-very-long-machine-name.local.example')
     assert.ok(long.length <= 64, long)
-    assert.match(long, /^Claude Code Proxy CA \(Mac-1759823044-runner-with-a-ver[\w-]*\)$/)
-    assert.equal(caCommonName('MacBook-Pro.local'), 'Claude Code Proxy CA (MacBook-Pro)')
-    assert.equal(caCommonName(''), 'Claude Code Proxy CA (local)')
+    assert.match(long, /^Wirepane CA \(Mac-1759823044-runner-with-a-ver[\w-]*\)$/)
+    assert.equal(caCommonName('MacBook-Pro.local'), 'Wirepane CA (MacBook-Pro)')
+    assert.equal(caCommonName(''), 'Wirepane CA (local)')
   })
 
   test('puts the Wi-Fi address a phone should use first, VPN and VM bridges last', () => {
@@ -238,7 +238,7 @@ describe('sidecar', () => {
     )
     assert.equal(new X509Certificate(der).fingerprint256, ready.ca.fingerprint256)
     const page = await curl([`${proxy}/`])
-    assert.match(page.stdout, /Claude Code Proxy/)
+    assert.match(page.stdout, /Wirepane/)
     const magic = await curl(['-x', proxy, 'http://claude.proxy/ca.mobileconfig'])
     assert.match(magic.stdout, /com\.apple\.security\.root/)
   })

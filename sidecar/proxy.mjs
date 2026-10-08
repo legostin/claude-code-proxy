@@ -345,7 +345,7 @@ function passThrough(req, res, target, isCounted = true) {
   const isLocal = isLocalClient(client)
   if (!isLocal && isLoopback(target.host)) {
     res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
-    return res.end(`Claude Code proxy: ${loopbackRefusal(target.host)}\n`)
+    return res.end(`Wirepane: ${loopbackRefusal(target.host)}\n`)
   }
   const isHttps = target.scheme === 'https'
   const upstream = (isHttps ? https : http).request({
@@ -383,12 +383,12 @@ function setupPage() {
     : `<code>127.0.0.1:${listenPort}</code>`
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Claude Code Proxy</title>
+<title>Wirepane</title>
 <style>body{font:16px/1.5 -apple-system,system-ui,sans-serif;max-width:640px;margin:24px auto;padding:0 16px;color:#222}
 a.b{display:block;margin:10px 0;padding:14px;border-radius:10px;background:#d97757;color:#fff;text-decoration:none;text-align:center;font-weight:600}
 code{background:#f2f0ec;padding:1px 4px;border-radius:4px;word-break:break-all}small{color:#666}
 @media (prefers-color-scheme:dark){body{background:#1f1e1d;color:#eee}code{background:#333}small{color:#aaa}}</style></head><body>
-<h1>Claude Code Proxy</h1>
+<h1>Wirepane</h1>
 <p>Proxy: ${links}</p>
 <a class="b" href="/ca.mobileconfig">iOS: download profile</a>
 <a class="b" href="/ca.crt">Android: download certificate (.crt)</a>
@@ -409,17 +409,17 @@ function serveSelf(res, path) {
   }
   if (route === '/ca.pem') {
     return send(200, 'application/x-pem-file', ca.caPem, {
-      'content-disposition': 'attachment; filename="claude-code-proxy-ca.pem"',
+      'content-disposition': 'attachment; filename="wirepane-ca.pem"',
     })
   }
   if (route === '/ca.crt' || route === '/ca.cer' || route === '/ca.der') {
     return send(200, 'application/x-x509-ca-cert', ca.caDer, {
-      'content-disposition': 'attachment; filename="claude-code-proxy-ca.crt"',
+      'content-disposition': 'attachment; filename="wirepane-ca.crt"',
     })
   }
   if (route === '/ca.mobileconfig') {
     return send(200, 'application/x-apple-aspen-config', mobileConfig(ca), {
-      'content-disposition': 'attachment; filename="claude-code-proxy.mobileconfig"',
+      'content-disposition': 'attachment; filename="wirepane.mobileconfig"',
     })
   }
   if (route === '/' || route === '/index.html') return send(200, 'text/html; charset=utf-8', setupPage())
@@ -477,7 +477,7 @@ function handleRequest(req, res, tunnelTarget) {
     emit({ t: 'log', level: 'error', message: `exchange: ${error.stack ?? error.message}` })
     if (!res.headersSent) {
       res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
-      res.end(`Claude Code proxy failed: ${error.message}\n`)
+      res.end(`Wirepane failed: ${error.message}\n`)
     } else {
       res.destroy()
     }
@@ -587,7 +587,7 @@ async function exchange(req, res, target) {
     flow.error = text
     flow.errorCode = code
     res.writeHead(status, { 'content-type': 'text/plain; charset=utf-8' })
-    res.end(`Claude Code proxy: ${text}\n`)
+    res.end(`Wirepane: ${text}\n`)
     req.resume()
     resBody = new Capture(0)
     return finish()
@@ -683,7 +683,7 @@ async function exchange(req, res, target) {
       flow.errorCode = isRefused ? 'forbidden' : 'upstream'
       if (!res.headersSent) {
         res.writeHead(isRefused ? 403 : 502, { 'content-type': 'text/plain; charset=utf-8' })
-        res.end(`Claude Code proxy could not reach ${sent.target.host}:${sent.target.port}\n${flow.error}\n`)
+        res.end(`Wirepane could not reach ${sent.target.host}:${sent.target.port}\n${flow.error}\n`)
       } else {
         res.destroy()
       }

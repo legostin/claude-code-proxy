@@ -1,6 +1,6 @@
 # Wirepane: an HTTPS debugging proxy inside Claude Code
 
-[![CI](https://github.com/legostin/claude-code-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/legostin/claude-code-proxy/actions/workflows/ci.yml)
+[![CI](https://github.com/legostin/wirepane/actions/workflows/ci.yml/badge.svg)](https://github.com/legostin/wirepane/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Claude Code mod](https://img.shields.io/badge/Claude%20Code-mod-d97757.svg)](https://claude.com/claude-code)
 
@@ -11,7 +11,7 @@ the Android emulator or an Android phone. It shows every request in a filterable
 Claude read the same traffic, so you can ask *"why does the login request return 401?"* and it
 looks at the real request and response.
 
-[Website](https://legostin.github.io/claude-code-proxy/) · [Install](#install) · [What it runs and changes](#what-it-runs-and-what-it-changes) · [Design notes](docs/design.md)
+[Website](https://legostin.github.io/wirepane/) · [Install](#install) · [What it runs and changes](#what-it-runs-and-what-it-changes) · [Design notes](docs/design.md)
 
 ## Install
 
@@ -20,13 +20,13 @@ Node.js 18 or newer, which it finds by itself: on PATH, or where Homebrew, Volta
 asdf, nodenv or MacPorts put it. With none, the pane offers to install it. At the Claude Code prompt:
 
 ```
-/plugin install wirepane --marketplace legostin/claude-code-proxy
+/plugin install wirepane --marketplace legostin/wirepane
 ```
 
 Answer `y` to add the marketplace and pick a scope. The same from a shell:
 
 ```sh
-claude plugin marketplace add legostin/claude-code-proxy
+claude plugin marketplace add legostin/wirepane
 claude plugin install wirepane@wirepane
 ```
 
@@ -312,8 +312,8 @@ Files it writes:
 
 1. `/proxy stop` puts back the system proxy and the Android devices it pointed here.
 2. `/plugin uninstall wirepane@wirepane`, or **Uninstall** in `/plugin` → **Installed**.
-3. Remove the CA where you trusted it: in Keychain Access on the Mac (search for *Claude Code Proxy
-   CA*), under **Settings → General → VPN & Device Management** on an iPhone, and under user
+3. Remove the CA where you trusted it: in Keychain Access on the Mac (search for *Wirepane CA*),
+   under **Settings → General → VPN & Device Management** on an iPhone, and under user
    credentials on Android.
 4. `rm -rf ~/.claude/proxy-mod` deletes the CA, the recorded requests and the browser profiles.
 
@@ -356,7 +356,7 @@ claude plugin test .                  # the logic, the pane (terminal and deskto
 claude plugin validate --strict .
 ```
 
-To run a working copy: `claude --plugin-dir /path/to/claude-code-proxy`.
+To run a working copy: `claude --plugin-dir /path/to/wirepane`.
 
 ## License
 
