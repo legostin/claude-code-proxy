@@ -58,6 +58,10 @@ import {
   browserGuide,
   cliGuide,
   iosGuide,
+  MIN_NODE,
+  newestNodeFirst,
+  NODE_DOWNLOAD,
+  nodeMajor,
   phoneAddress,
   proxyTargets,
   SETUP_TABS,
@@ -134,7 +138,6 @@ type Options = {
   listen: 'local' | 'lan'
   noDecrypt: string
   maxFlows: number
-  node: string
 }
 
 type Runtime = {
@@ -220,6 +223,15 @@ async function startProxy($: EngineInterface, options: Options): Promise<void> {
     await $.clock.sleep(300)
   }
 
+  const node = await findNode($)
+  if (!node) {
+    runtime = null
+    await update($, wantedAtom, () => false)
+    await update($, statusAtom, (s): ProxyStatus => ({ ...(s ?? STOPPED), phase: 'failed', pid: null, error: NO_NODE, isNodeMissing: true }))
+    await showStatus($)
+    return
+  }
+
   const host = options.listen === 'lan' ? '0.0.0.0' : '127.0.0.1'
   await update($, wantedAtom, () => true)
   await update($, statusAtom, (s): ProxyStatus => ({ ...STOPPED, lan: s?.lan ?? [], phase: 'starting', host, port: options.port }))
@@ -227,7 +239,7 @@ async function startProxy($: EngineInterface, options: Options): Promise<void> {
 
   const stream = $.process.spawn({
     argv: [
-      options.node,
+      node,
       `${$.plugin.root}/sidecar/proxy.mjs`,
       '--port', String(options.port),
       '--host', host,
@@ -296,7 +308,7 @@ async function startProxy($: EngineInterface, options: Options): Promise<void> {
         }
       }
     } catch (error) {
-      fatal = `could not start "${options.node}": ${error instanceof Error ? error.message : String(error)}. The proxy needs Node 18 or newer (the Node executable option in /config).`
+      fatal = `could not start "${node}": ${error instanceof Error ? error.message : String(error)}. The proxy needs Node ${MIN_NODE} or newer.`
     }
     if (runtime === rt) runtime = null
     // The module may be unloading as the child ends: what is left to record
@@ -436,6 +448,73 @@ async function addCaToSimulators($: EngineInterface): Promise<void> {
       .filter(Boolean)
       .join(' '),
   )
+}
+
+const NO_NODE =
+  `Node.js ${MIN_NODE} or newer runs the proxy, and there is none on PATH or where Homebrew, Volta, nvm, fnm, mise, asdf, nodenv or MacPorts put it.`
+
+/**
+ * The Node that runs the sidecar: on PATH, or where a package or version
+ * manager keeps it, since a Claude Code started from the Dock has a short
+ * PATH. Each is asked its version; nvm's and fnm's newest come first.
+ */
+async function findNode($: EngineInterface): Promise<string | null> {
+  const home = (await $.env.get('HOME')) ?? ''
+  const managed: string[] = []
+  for (const [dir, bin] of [
+    [`${home}/.nvm/versions/node`, 'bin/node'],
+    [`${home}/Library/Application Support/fnm/node-versions`, 'installation/bin/node'],
+    [`${home}/.local/share/fnm/node-versions`, 'installation/bin/node'],
+  ] as const) {
+    const names = (await $.fs.list(dir).catch(() => [])).map(entry => entry.name)
+    managed.push(...newestNodeFirst(names).map(version => `${dir}/${version}/${bin}`))
+  }
+  const candidates = [
+    'node',
+    '/opt/homebrew/bin/node',
+    '/usr/local/bin/node',
+    `${home}/.volta/bin/node`,
+    ...managed,
+    `${home}/.local/share/mise/shims/node`,
+    `${home}/.asdf/shims/node`,
+    `${home}/.nodenv/shims/node`,
+    '/opt/local/bin/node',
+  ]
+  for (const candidate of candidates) {
+    if (candidate !== 'node' && !(await $.fs.exists(candidate).catch(() => false))) continue
+    const ran = await $.process.run([candidate, '--version']).catch(() => null)
+    if (ran?.exitCode === 0 && nodeMajor(ran.stdout) >= MIN_NODE) return candidate
+  }
+  return null
+}
+
+async function findBrew($: EngineInterface): Promise<string | null> {
+  for (const path of ['/opt/homebrew/bin/brew', '/usr/local/bin/brew']) {
+    if (await $.fs.exists(path).catch(() => false)) return path
+  }
+  return null
+}
+
+/** Installs Node with Homebrew and starts the proxy on it; without Homebrew, opens the download page. */
+async function installNode($: EngineInterface, options: Options): Promise<void> {
+  const brew = await findBrew($)
+  if (!brew) {
+    await $.process.run(['open', NODE_DOWNLOAD]).catch(() => null)
+    return
+  }
+  await update($, busyAtom, () => 'Installing Node.js: brew install node…')
+  let ran: { exitCode: number | null; stdout: string; stderr: string }
+  try {
+    ran = await $.process.run([brew, 'install', 'node'], { timeoutMs: 600_000 }).catch(error => ({ exitCode: 1, stdout: '', stderr: String(error) }))
+  } finally {
+    await update($, busyAtom, () => '')
+  }
+  if (ran.exitCode !== 0) {
+    const why = (ran.stderr || ran.stdout).trim().split('\n').slice(-2).join(' ⏎ ')
+    await update($, statusAtom, (s): ProxyStatus => ({ ...(s ?? STOPPED), error: `brew install node failed${why ? `: ${why}` : ''}`, isNodeMissing: true }))
+    return
+  }
+  await startProxy($, options)
 }
 
 async function adb($: EngineInterface): Promise<string | null> {
@@ -1037,6 +1116,26 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
   const rules = await read($, rulesAtom)
   const rulesOn = rules.entries.filter(entry => entry.enabled && entry.errors.length === 0 && !entry.isUntrusted).length
   // nothing captured yet: the one-press ways in, from what is on this Mac
+  // no Node to run the proxy on: install it, or download it without Homebrew
+  let nodeOffer: RenderElement | null = null
+  if (status.isNodeMissing) {
+    const busy = await read($, busyAtom)
+    const brew = busy ? null : await findBrew($)
+    nodeOffer = (
+      <Box flexDirection="row" gap={1} flexWrap="wrap">
+        {busy ? <Text color="claude">◌ {busy}</Text> : null}
+        {!busy && brew ? (
+          <Button key="install-node" hotkey="i" variant="primary" label="Install Node.js" onPress={() => void installNode($, options)} />
+        ) : null}
+        {!busy && brew ? <Text dimColor>brew install node, then the proxy starts</Text> : null}
+        {!busy && !brew ? (
+          <Button key="download-node" hotkey="i" variant="primary" label="Download Node.js" onPress={() => void installNode($, options)} />
+        ) : null}
+        {!busy && !brew ? <Text dimColor>nodejs.org: install it, then press Start</Text> : null}
+      </Box>
+    )
+  }
+
   let quickStart: RenderElement | null = null
   if (flows.length === 0) {
     const browsers = await findBrowsers($)
@@ -1159,6 +1258,7 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
         />
       </Box>
       {status.error ? <Text color="error">{status.error}</Text> : null}
+      {nodeOffer}
       {Input ? (
         <Input
           key="filter"
@@ -1981,7 +2081,6 @@ function optionsOf(raw: Record<string, unknown>): Options {
     listen: raw.listen === 'lan' ? 'lan' : 'local',
     noDecrypt: typeof raw.noDecrypt === 'string' ? raw.noDecrypt : '',
     maxFlows: number(raw.maxFlows, 2000),
-    node: typeof raw.node === 'string' && raw.node.trim() ? raw.node.trim() : 'node',
   }
 }
 

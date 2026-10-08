@@ -77,9 +77,15 @@ const ROOT = '/work/app'
 const RULES_FILE = `${ROOT}/.claude/proxy-rules.json`
 const TRUST_FILE = `${HOME}/.claude/proxy-mod/trusted-scripts.json`
 
-function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string> = {}, isQuiet = false) {
+/** Where Node is on the fake Mac: `--version` per path ("node" is the one on PATH), Homebrew, version folders. */
+type FakeNode = { versions?: Record<string, string>; hasBrew?: boolean; dirs?: Record<string, string[]> }
+
+const BREW = '/opt/homebrew/bin/brew'
+
+function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string> = {}, isQuiet = false, node: FakeNode = {}) {
   // the disk, fresh for each test: reads see what writes left
   const files: Record<string, string> = { ...FILES, ...extraFiles }
+  const nodes: Record<string, string> = { ...(node.versions ?? { node: 'v22.11.0' }) }
   const spawned: (readonly string[])[] = []
   const killed: string[] = []
   let isKilled = false
@@ -106,6 +112,14 @@ function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string
     ran.push(e.argv.join(' '))
     const ok = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
     const line = e.argv.join(' ')
+    if (e.argv[1] === '--version' && /(^|\/)node$/.test(e.argv[0]!)) {
+      const version = nodes[e.argv[0]!]
+      return version ? ok(`${version}\n`) : { deny: `ENOENT: ${e.argv[0]}` }
+    }
+    if (line === `${BREW} install node`) {
+      nodes['/opt/homebrew/bin/node'] = 'v24.9.0'
+      return ok('')
+    }
     if (line === 'xcrun simctl list devices available -j') return ok(JSON.stringify(SIMULATORS))
     if (line === 'route -n get default') return ok('   route to: default\n  interface: en0\n')
     if (line === 'networksetup -listnetworkserviceorder') return ok('(1) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n')
@@ -130,8 +144,14 @@ function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string
     return { value: undefined }
   })
   on('session.root', async () => ({ value: ROOT }))
-  // Chrome is installed; nothing else is.
-  on('fs.exists', async ($, e) => ({ value: e.path === '/Applications/Google Chrome.app' }))
+  // Chrome is installed, and the Node and Homebrew the test names; nothing else is.
+  on('fs.exists', async ($, e) => ({
+    value: e.path === '/Applications/Google Chrome.app' || e.path in nodes || (node.hasBrew === true && e.path === BREW),
+  }))
+  on('fs.list', async ($, e) => {
+    const names = node.dirs?.[e.path]
+    return names ? { value: names.map(name => ({ name, kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false })) } : { deny: `ENOENT: ${e.path}` }
+  })
   on('session.id', async () => ({ value: 'session' }))
   const configSets: [string, unknown][] = []
   on('config.set', async ($, e) => {
@@ -660,6 +680,63 @@ test('stopping the proxy puts the system proxy back', SLOW, async ($, on) => {
   expect(machine.files[BACKUP_FILE]).toBe('')
   expect(machine.spawned[0]).toContain('--system-proxy-backup')
   await clock.advance(200)
+  await ui.unmount()
+})
+
+test('without node on PATH, the newest Node 18 or newer is found where version managers keep it', SLOW, async ($, on) => {
+  const clock = mock.clock(on)
+  const nvm = `${HOME}/.nvm/versions/node`
+  const machine = fakeMachine(on, clock, {}, false, {
+    // Homebrew's is too old; nvm has a newer one
+    versions: { '/opt/homebrew/bin/node': 'v16.20.2', [`${nvm}/v18.20.4/bin/node`]: 'v18.20.4', [`${nvm}/v22.11.0/bin/node`]: 'v22.11.0' },
+    dirs: { [nvm]: ['v18.20.4', 'v9.11.2', 'v22.11.0'] },
+  })
+  const ui = await $.ui.mount({ plugin: 'wirepane', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'toggle' })
+  await clock.advance(250)
+  await ui.redraw()
+  expect(machine.spawned).toHaveLength(1)
+  expect(machine.spawned[0]![0]).toBe(`${nvm}/v22.11.0/bin/node`)
+  await ui.press({ key: 'toggle' })
+  await clock.advance(200)
+  await ui.unmount()
+})
+
+test('with no Node at all, the pane offers to install it with Homebrew and then starts', SLOW, async ($, on) => {
+  const clock = mock.clock(on)
+  const machine = fakeMachine(on, clock, {}, false, { versions: {}, hasBrew: true })
+  const ui = await $.ui.mount({ plugin: 'wirepane', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'toggle' })
+  await clock.advance(250)
+  await ui.redraw()
+  expect(machine.spawned).toHaveLength(0)
+  expect(await ui.find({ text: /Node\.js 18 or newer/ })).toBeDefined()
+  expect(await ui.find({ key: 'download-node' })).toBeUndefined()
+
+  await ui.press({ key: 'install-node' })
+  await clock.advance(250)
+  await ui.redraw()
+  expect(machine.ran).toContain(`${BREW} install node`)
+  expect(machine.spawned).toHaveLength(1)
+  expect(machine.spawned[0]![0]).toBe('/opt/homebrew/bin/node')
+  expect(await ui.find({ text: /127\.0\.0\.1:8899 · 3 requests/ })).toBeDefined()
+  expect(await ui.find({ key: 'install-node' })).toBeUndefined()
+  await ui.press({ key: 'toggle' })
+  await clock.advance(200)
+  await ui.unmount()
+})
+
+test('with no Node and no Homebrew, the pane opens the Node.js download', SLOW, async ($, on) => {
+  const clock = mock.clock(on)
+  const machine = fakeMachine(on, clock, {}, false, { versions: {} })
+  const ui = await $.ui.mount({ plugin: 'wirepane', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'toggle' })
+  await clock.advance(250)
+  await ui.redraw()
+  expect(machine.spawned).toHaveLength(0)
+  expect(await ui.find({ key: 'install-node' })).toBeUndefined()
+  await ui.press({ key: 'download-node' })
+  expect(machine.ran).toContain('open https://nodejs.org/en/download')
   await ui.unmount()
 })
 

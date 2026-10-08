@@ -50,6 +50,8 @@ export type ProxyStatus = {
   pid: number | null
   ca: ProxyCa | null
   error: string | null
+  /** No Node 18 or newer was found to run the proxy: the pane offers to install it. */
+  isNodeMissing?: boolean
 }
 
 /** One rule as the rules view shows it: the file's entry, checked. */

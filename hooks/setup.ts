@@ -279,3 +279,25 @@ ${setupCommands(facts).env}
 export function caName(facts: SetupFacts): string {
   return facts.status.ca?.subject.match(/CN=([^,]+)/)?.[1] ?? 'Claude Code Proxy CA'
 }
+
+/** The oldest Node the sidecar runs on. */
+export const MIN_NODE = 18
+
+/** Where to get Node.js when this Mac has no Homebrew. */
+export const NODE_DOWNLOAD = 'https://nodejs.org/en/download'
+
+/** The major version in `node --version` output ("v22.11.0" → 22), 0 for anything else. */
+export function nodeMajor(output: string): number {
+  return Number(/^v(\d+)\./.exec(output.trim())?.[1] ?? 0)
+}
+
+/** A version manager's folders ("v22.11.0", …), the newest first; other names left out. */
+export function newestNodeFirst(names: readonly string[]): string[] {
+  const parts = (name: string) => name.slice(1).split('.').map(Number)
+  return names
+    .filter(name => /^v\d+\.\d+\.\d+$/.test(name))
+    .sort((a, b) => {
+      const [x, y] = [parts(a), parts(b)]
+      return y[0]! - x[0]! || y[1]! - x[1]! || y[2]! - x[2]!
+    })
+}

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { buildTree, flattenTree, treeIds, treeLeafLabel } from '../hooks/flows'
-import { phoneAddress, proxyTargets, type SetupFacts } from '../hooks/setup'
+import { newestNodeFirst, nodeMajor, phoneAddress, proxyTargets, type SetupFacts } from '../hooks/setup'
 import type { ProxyAddress, ProxyFlow } from '../types'
 
 function flow(id: number, path: string, extra: Partial<ProxyFlow> = {}): ProxyFlow {
@@ -133,5 +133,18 @@ describe('the address to enter', () => {
     const bare = facts({ lan: [lan[2]!] })
     expect(phoneAddress(bare)).toBeNull()
     expect(proxyTargets(bare, 'ios')[1]!.host).toBeNull()
+  })
+})
+
+describe('finding Node', () => {
+  test('the major version comes from node --version', () => {
+    expect(nodeMajor('v22.11.0\n')).toBe(22)
+    expect(nodeMajor('v9.11.2')).toBe(9)
+    expect(nodeMajor('')).toBe(0)
+    expect(nodeMajor('zsh: command not found: node')).toBe(0)
+  })
+
+  test("a version manager's folders, the newest first", () => {
+    expect(newestNodeFirst(['v18.20.4', 'v9.11.2', '.DS_Store', 'v22.11.0', 'v22.2.0'])).toEqual(['v22.11.0', 'v22.2.0', 'v18.20.4', 'v9.11.2'])
   })
 })

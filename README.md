@@ -15,8 +15,9 @@ looks at the real request and response.
 
 ## Install
 
-Requires macOS, Claude Code 2.1.292 or newer, Node.js 18 or newer, and `openssl` (built into
-macOS). At the Claude Code prompt:
+Requires macOS, Claude Code 2.1.292 or newer, and `openssl` (built into macOS). The proxy runs on
+Node.js 18 or newer, which it finds by itself: on PATH, or where Homebrew, Volta, nvm, fnm, mise,
+asdf, nodenv or MacPorts put it. With none, the pane offers to install it. At the Claude Code prompt:
 
 ```
 /plugin install wirepane --marketplace legostin/claude-code-proxy
@@ -249,7 +250,6 @@ Set them in `/config`, or in `/plugin` → **Installed** → **wirepane** → **
 | Listen on | `local` | `lan` opens the proxy to phones on the network |
 | Hosts not to decrypt | `*.apple.com,*.icloud.com,*.mzstatic.com,*.apple-cloudkit.com` | tunnelled untouched |
 | Requests kept | `2000` | |
-| Node executable | `node` | |
 
 ## How it works
 
@@ -277,7 +277,8 @@ reads.
 While the proxy is on, it runs:
 
 - `node sidecar/proxy.mjs`, the proxy itself, on `127.0.0.1` (on the network too in `lan` mode),
-  stopped with `kill` when you stop the proxy or the session ends.
+  stopped with `kill` when you stop the proxy or the session ends. It runs on the first Node from
+  the places under [Install](#install) that answers `--version` with 18 or newer.
 - `openssl`, to make the CA and a certificate for each host.
 - `route`, `networksetup` and `scutil`, to find this Mac's addresses and read the system proxy, and
   `ps` and `lsof`, to tell Claude's own connections apart so that they are tunnelled, never decrypted.
@@ -291,6 +292,8 @@ Only when you press the button for it:
 | **iOS → Use**, **Boot & use** | `xcrun simctl`, `open -a Simulator` | The CA in that simulator's keychain |
 | **Browser → Open** | `open -na <browser>` with a profile of its own | Nothing outside `~/.claude/proxy-mod/browser` |
 | **Android → Start through the proxy** | `emulator -avd <name> -http-proxy …`, `adb` | Nothing: the proxy setting lasts for that run |
+| **Install Node.js**, shown when no Node was found | `brew install node`, then the proxy starts | Node.js from Homebrew |
+| **Download Node.js**, the same without Homebrew | `open https://nodejs.org/en/download` | Nothing |
 | **Android → proxy**, **Point USB phones at the proxy** | `adb shell settings put global http_proxy`, `adb reverse` | The device's proxy, put back by **Revert** and when the proxy stops |
 
 Files it writes:
