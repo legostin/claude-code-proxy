@@ -1144,10 +1144,14 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
     const simulator = devices.simulators[0]
     const avd = devices.avds.find(name => !devices.android.some(device => device.avd === name)) ?? devices.avds[0]
     const row = (label: string, action: RenderElement | null, hint: string) => (
-      <Box key={`qs-row-${label}`} flexDirection="row" gap={1} flexWrap="wrap">
+      <Box key={`qs-row-${label}`} flexDirection="row" gap={1}>
         <Text>{label.padEnd(13)}</Text>
         {action}
-        <Text dimColor>{hint}</Text>
+        <Box flexShrink={1}>
+          <Text dimColor wrap="truncate-end">
+            {hint}
+          </Text>
+        </Box>
       </Box>
     )
     quickStart = (
@@ -1164,23 +1168,23 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
           browsers[0] ? (
             <Button key="qs-browser" label={`Open ${browsers[0].browser.name}`} onPress={() => void launchBrowser($, options, browsers[0]!.browser.slug)} />
           ) : null,
-          browsers[0] ? 'a separate window: all of its traffic lands here, localhost too' : 'no Chrome, Edge, Brave or Chromium in /Applications',
+          browsers[0] ? 'its own window, localhost too' : 'no Chrome, Edge, Brave or Chromium in /Applications',
         )}
         {simulator
           ? row(
               'iOS Simulator',
               <Button key="qs-simulator" label={`Use ${simulator.name}`} onPress={() => void useSimulator($, simulator.udid, options)} />,
-              'boots it, adds the CA, turns the system proxy on',
+              'boots, adds the CA, system proxy on',
             )
           : null}
         {avd
-          ? row('Android', <Button key="qs-avd" label={`Start ${avd}`} onPress={() => void startAvd($, avd, options)} />, 'starts the emulator behind the proxy')
+          ? row('Android', <Button key="qs-avd" label={`Start ${avd}`} onPress={() => void startAvd($, avd, options)} />, 'starts it behind the proxy')
           : null}
-        {row('Phone', <Button key="qs-phone" label="Set up a phone" onPress={() => void openSetupTab($, 'ios', 'real')} />, 'the exact address and a QR code to scan')}
+        {row('Phone', <Button key="qs-phone" label="Set up a phone" onPress={() => void openSetupTab($, 'ios', 'real')} />, 'its address and a QR code')}
         {row(
           'Only your app',
           <Button key="qs-domains" label="Track domains" onPress={() => void update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'domains' }))} />,
-          'decrypt and record only its hosts; everything else passes through',
+          'record only its hosts',
         )}
       </Box>
     )
