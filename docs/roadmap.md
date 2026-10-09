@@ -14,7 +14,9 @@ What comes next, in order. Each item says what changes for the person using it, 
   - A session's list holds the hosts of its own set. A session that tracks nothing sees everything.
   - "Passed through" (the hosts offered for tracking in the Domains view and in the doctor) is per session too: the hosts this session's set left out.
   - `track_domains`, the Domains view and the doctor's tracking findings act on this session's set.
-  - The set must survive `/clear`. This is what broke before: tracking was keyed by the session id, `/clear` changed the id, and the domain filter stopped working. So the set is keyed by the project folder (two sessions in one folder share it), or carried over by `reattach`.
+  - **The set is remembered by the project folder.** Open Claude Code in the same folder tomorrow and its domains are there; `/clear` and a restart keep them; two sessions in one folder share the set. This is also what fixes the old bug: tracking was keyed by the session id, `/clear` changed the id, and the domain filter stopped working.
+  - It is kept in `~/.claude/proxy-mod/projects/<the folder's hash>/tracking.json`, with the folder's path inside, so nothing is added to the project's repository.
+  - The global list of today seeds, once, each project that has no set of its own yet, so nothing tracked is lost; after that the sets go their own ways.
 - **More of the scope**, to settle in the design:
   - the clients a session claims, such as "this session is the iOS Simulator, that one is the Android emulator";
   - its project's rules: requests its rules changed always belong to it.
@@ -26,7 +28,7 @@ What comes next, in order. Each item says what changes for the person using it, 
 
 - The sidecar tags each flow, as it is recorded, with the sessions whose scope it matches. The `flow` event carries the tags, and the backlog a session gets on attach is filtered by them.
 - A session's scope must survive `/clear`: the session id changes then, and `$.state` resets. It has to be keyed by something that stays, such as the project folder, or carried over by `reattach`, which already follows the id change.
-- The tests: two attached sessions with different tracked domains each record and list their own hosts, and a host neither tracks passes through; a session that tracks nothing sees everything; `track_domains` in one leaves the other's set alone; `/clear` keeps the set; Clear in one leaves the other's list whole; Show all sees everything.
+- The tests: a set is back after the session ends and a new one opens in the same folder; two attached sessions in different folders, with different tracked domains, each record and list their own hosts, and a host neither tracks passes through; a session that tracks nothing sees everything; `track_domains` in one leaves the other's set alone; `/clear` keeps the set; Clear in one leaves the other's list whole; Show all sees everything.
 - Docs to change once it ships: README "One proxy for every session", the site's sessions section (the line "a second session attaches and sees everything the first recorded"), and `docs/design.md`.
 
 ## Also open
