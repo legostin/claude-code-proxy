@@ -1584,8 +1584,8 @@ async function websocket(req, clientSocket, head, target) {
     flow.durationMs = Date.now() - flow.ts
     flow.state = flow.error ? 'error' : 'done'
     records?.end()
-    writeDetail(flow, detail())
-    emitFlow(flow)
+    // the end is told once its detail is on disk: whoever hears it reads the last word
+    writeDetail(flow, detail()).finally(() => emitFlow(flow))
   }
 
   emitFlow(flow)
@@ -1858,8 +1858,8 @@ function rawUpgrade(req, clientSocket, head, target, quiet) {
     isFinished = true
     flow.durationMs = Date.now() - flow.ts
     flow.state = flow.error ? 'error' : 'done'
-    emitFlow(flow)
-    writeDetail(flow, { url: `${target.scheme === 'https' ? 'wss' : 'ws'}://${target.host}:${target.port}${target.path}`, reqHeaders, resHeaders: [], req: null, res: null })
+    // a quiet upgrade writes nothing: its writeDetail answers undefined
+    Promise.resolve(writeDetail(flow, { url: `${target.scheme === 'https' ? 'wss' : 'ws'}://${target.host}:${target.port}${target.path}`, reqHeaders, resHeaders: [], req: null, res: null })).finally(() => emitFlow(flow))
   }
 
   if (!isLocalClient(flow.client) && isLoopback(target.host)) {
@@ -1974,8 +1974,7 @@ function tunnel(clientSocket, host, port, reason) {
     isFinished = true
     flow.durationMs = Date.now() - flow.ts
     flow.state = flow.error ? 'error' : 'done'
-    emitFlow(flow)
-    writeDetail(flow, { url: `${host}:${port}`, reqHeaders: [], resHeaders: [], req: null, res: null })
+    writeDetail(flow, { url: `${host}:${port}`, reqHeaders: [], resHeaders: [], req: null, res: null }).finally(() => emitFlow(flow))
   }
   if (!isLocalClient(flow.client) && isLoopback(host)) {
     flow.error = loopbackRefusal(host)
