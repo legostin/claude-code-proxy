@@ -15,6 +15,7 @@ import {
   statusLabel,
   toCurl,
   typeOf,
+  wsLine,
 } from '../hooks/flows'
 import type { ProxyFlow } from '../types'
 
@@ -177,6 +178,15 @@ describe('formats', () => {
     expect(clip('a\nb\nc', 2, 100)).toEqual({ text: 'a\nb', isClipped: true })
     expect(clip('abcdef', 10, 3)).toEqual({ text: 'abc', isClipped: true })
     expect(clip('ok', 10, 10)).toEqual({ text: 'ok', isClipped: false })
+  })
+})
+
+describe('WebSocket messages', () => {
+  test('a binary message the proxy read shows what it holds, not base64', () => {
+    const decoded = { t: 5630, dir: 'in' as const, op: 'binary', size: 28, b64: 'GwgNEAIaFQoTJDY3MzExODIwODkxNzc0OTc2MA==', view: '1: 13\n2: 2\n3 {\n  1: "$673118208917749760"\n}', viewKind: 'protobuf after its length' }
+    expect(wsLine(decoded, 27)).toBe('27. +5.63s ← client (binary) 28B protobuf after its length: 1: 13 2: 2 3 { 1: "$673118208917749760" }')
+    const opaque = { t: 6780, dir: 'out' as const, op: 'binary', size: 3, b64: '/w==' }
+    expect(wsLine(opaque, 28)).toBe('28. +6.78s → server (binary) binary 3B base64 /w==')
   })
 })
 

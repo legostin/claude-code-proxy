@@ -217,7 +217,7 @@ async function showStatus($: EngineInterface): Promise<void> {
 
 function describeFatal(code: string, message: string, options: Options): string {
   if (code === 'port-busy') {
-    return `port ${options.port} is taken (another Claude session or another proxy). Change the Port option in /config, or stop that process: lsof -nP -iTCP:${options.port} -sTCP:LISTEN`
+    return `port ${options.port} is taken (another Claude session or another proxy). Change Proxy port in /config, or stop that process: lsof -nP -iTCP:${options.port} -sTCP:LISTEN`
   }
   if (code === 'ca') return `could not create the certificates (openssl is needed): ${message}`
   return message
@@ -1241,7 +1241,7 @@ const BODY_CHARS = 20_000
 
 const ERROR_HINTS: Record<string, string> = {
   'client-rejected-cert':
-    'The client does not trust the proxy CA, or the app pins its certificates. Install and trust the CA (Setup), or add the host to "Hosts not to decrypt".',
+    'The client does not trust the proxy CA, or the app pins its certificates. Install and trust the CA (Setup), or add the host to "Hosts never decrypted".',
   upstream: 'The proxy could not reach the server: DNS, the network, a refused connection or an untrusted server certificate.',
   'client-closed': 'The client closed the connection before the whole response arrived.',
   'tls-handshake': 'The TLS handshake with the client failed.',
@@ -1926,7 +1926,7 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
     const rows = await $.config.list().catch(() => [])
     const key = rows.find(row => /(^|[.:@])listen$/.test(row.key) && JSON.stringify(row.provider ?? '').includes('wirepane'))?.key ?? 'wirepane.listen'
     const result = await $.config.set({ key, value })
-    await say($, 'deny' in result && result.deny ? `Could not change Listen on: ${result.deny}` : value === 'lan' ? 'Listening on the network now.' : 'Listening on this Mac only now.')
+    await say($, 'deny' in result && result.deny ? `Could not change Proxy reachable from: ${result.deny}` : value === 'lan' ? 'Listening on the network now.' : 'Listening on this Mac only now.')
   }
 
   // clients on the network: what each sent, and how often it refused our certificate
@@ -2089,7 +2089,7 @@ async function drawSetup($: EngineInterface, e: PaneEvent, tab: ProxySetupTab, o
           {phone && !isLocalOnly && phoneClients.length === 0 ? <Text dimColor>Nothing from a phone yet: once its Wi-Fi proxy is set, its requests show here.</Text> : null}
           {isLocalOnly ? (
             <Box flexDirection="row" gap={1} flexWrap="wrap">
-              <Text color="warning">Listen on is local: a phone cannot reach the proxy yet.</Text>
+              <Text color="warning">The proxy is reachable from this Mac only: a phone cannot reach it yet.</Text>
               <Button key="listen-lan" hotkey="l" variant="primary" label="Listen on LAN" onPress={() => void setListen('lan')()} />
             </Box>
           ) : null}
@@ -2961,7 +2961,7 @@ async function findIn($: EngineInterface, flow: ProxyFlow, text: string, where: 
   if (detail.ws) {
     const messages = await readRecords<WsRecord>($, detail.ws.file)
     for (let i = 0; i < messages.length; i++) {
-      const hit = look(`message ${i + 1}`, messages[i]!.text)
+      const hit = look(`message ${i + 1}`, messages[i]!.text ?? messages[i]!.view)
       if (hit) return hit
     }
   }

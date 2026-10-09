@@ -2,9 +2,9 @@
 
 import assert from 'node:assert/strict'
 import { describe, test } from 'node:test'
-import { gzipSync } from 'node:zlib'
+import { deflateSync, gzipSync } from 'node:zlib'
 
-import { grpcFrames, renderGrpc, renderProtobuf } from './protobuf.mjs'
+import { binaryView, grpcFrames, renderGrpc, renderProtobuf } from './protobuf.mjs'
 
 const varint = n => {
   const out = []
@@ -69,5 +69,32 @@ describe('gRPC bodies', () => {
     const rendered = ['message 1 (5 bytes)', '1: "web"', '', 'trailers', 'grpc-status: 0', 'grpc-message: ok'].join('\n')
     assert.equal(renderGrpc(body, 'application/grpc-web+proto'), rendered)
     assert.equal(renderGrpc(Buffer.from(body.toString('base64')), 'application/grpc-web-text'), rendered)
+  })
+})
+
+describe('binary messages (a WebSocket\'s)', () => {
+  const tick = Buffer.concat([key(1, 0), varint(13), key(2, 0), varint(2), len(3, len(1, Buffer.from('$673118208917749760')))])
+
+  test('protobuf after its varint length, one message or several', () => {
+    assert.deepEqual(binaryView(Buffer.concat([varint(tick.length), tick])), { kind: 'protobuf after its length', view: '1: 13\n2: 2\n3 {\n  1: "$673118208917749760"\n}' })
+    const two = Buffer.concat([varint(tick.length), tick, varint(2), key(1, 0), varint(8)])
+    assert.equal(binaryView(two).kind, '2 protobuf messages, each after its length')
+    assert.match(binaryView(two).view, /\n---\n1: 8$/)
+    // an empty message after its length (0x00) and one with an empty field
+    assert.deepEqual(binaryView(Buffer.from([4, 0x08, 0x08, 0x1a, 0x00])), { kind: 'protobuf after its length', view: '1: 8\n3: ""' })
+  })
+
+  test('bare protobuf, a gRPC frame, text, and gzip or zlib around them', () => {
+    assert.deepEqual(binaryView(tick), { kind: 'protobuf', view: '1: 13\n2: 2\n3 {\n  1: "$673118208917749760"\n}' })
+    assert.equal(binaryView(frame(tick)).kind, 'protobuf in a gRPC frame')
+    assert.equal(binaryView(frame(gzipSync(tick), 1)).kind, 'protobuf in a gRPC frame, gzipped')
+    assert.deepEqual(binaryView(Buffer.from('{"op":"subscribe"}')), { kind: 'text', view: '{"op":"subscribe"}' })
+    assert.deepEqual(binaryView(gzipSync(tick)), { kind: 'gzip, protobuf', view: '1: 13\n2: 2\n3 {\n  1: "$673118208917749760"\n}' })
+    assert.equal(binaryView(deflateSync('{"a":1}')).kind, 'zlib, text')
+  })
+
+  test('nothing for bytes no reading fits', () => {
+    assert.equal(binaryView(Buffer.alloc(0)), null)
+    assert.equal(binaryView(Buffer.from([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])), null)
   })
 })

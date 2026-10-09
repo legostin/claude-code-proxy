@@ -45,7 +45,7 @@ export type ProxyTarget = {
   port: number
   /** Where it goes, or what sets it. */
   how: string
-  /** Reached over the network: needs Listen on = lan. */
+  /** Reached over the network: needs Proxy reachable from = lan. */
   isRemote: boolean
 }
 
@@ -191,7 +191,7 @@ export function iosGuide(facts: SetupFacts): string {
 4. **Settings → Wi-Fi → (i) next to the network → Configure Proxy → Manual**:
    Server \`${phone.address}\`, Port \`${facts.status.port}\`, Authentication off.
 5. Done. Rows marked **CERT** in the list mean step 3 is missing or the app pins its certificates;
-   such hosts can go into the "Hosts not to decrypt" option.
+   such hosts can go into the "Hosts never decrypted" option.
 
 When you are done, set **Configure Proxy → Off** again, or the iPhone loses its network once the proxy stops.`
   return `### iOS Simulator

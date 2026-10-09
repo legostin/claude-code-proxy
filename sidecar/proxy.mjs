@@ -46,7 +46,7 @@ import {
   urlOf,
 } from './engine.mjs'
 import { networkAddresses } from './network.mjs'
-import { grpcWebTrailers, renderGrpc, renderProtobuf, viewKindOf } from './protobuf.mjs'
+import { binaryView, grpcWebTrailers, renderGrpc, renderProtobuf, viewKindOf } from './protobuf.mjs'
 import { EventStreamReader } from './sse.mjs'
 import { createUpstream } from './upstream.mjs'
 import { acceptKey, closePayload, encodeFrame, FrameReader, MessageAssembler, OP, opName, parseClose, withoutDeflate } from './websocket.mjs'
@@ -1728,7 +1728,7 @@ async function websocket(req, clientSocket, head, target) {
     emitTimer.unref()
   }
 
-  // one JSON line per message: t (ms since the upgrade), dir, op, size, text or b64
+  // one JSON line per message: t (ms since the upgrade), dir, op, size, text or b64 (and a binary one's view)
   const record = (dir, opcode, data, extra = {}) => {
     if (opcode === OP.text || opcode === OP.binary) {
       if (dir === 'out') flow.wsOut += 1
@@ -1751,6 +1751,12 @@ async function websocket(req, clientSocket, head, target) {
     } else if (data.length) {
       line.b64 = data.subarray(0, 4096).toString('base64')
       if (data.length > 4096) line.isCut = true
+      // a binary message read without its schema: protobuf (bare, after its length, in a gRPC frame), text, gzip
+      const view = opcode === OP.binary && !extra.isCompressed ? binaryView(data) : null
+      if (view) {
+        line.view = view.view
+        line.viewKind = view.kind
+      }
     }
     if (isFinished) return
     if (!records) {

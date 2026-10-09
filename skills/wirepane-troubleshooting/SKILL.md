@@ -74,7 +74,7 @@ Someone else's app that pins stays encrypted. Leave it passed through, or "Never
 
 ## A phone cannot connect
 
-1. Turn on Listen on → LAN (Setup). The Mac and the phone must be on the same network.
+1. Press **Listen on LAN** in Setup (it sets Proxy reachable from to `lan`). The Mac and the phone must be on the same network.
 2. Guest or office Wi-Fi often isolates clients. Use a home or hotspot network.
 3. The macOS firewall can block it: allow incoming connections for `node`.
 4. A VPN on the Mac (`diagnose` names it) can route the phone's packets away. Try with it off.
@@ -97,6 +97,7 @@ Someone else's app that pins stays encrypted. Leave it passed through, or "Never
 
 - **gRPC:** needs HTTP/2, which Wirepane speaks both ways: over TLS, or in plain text (h2c with prior knowledge, as a gRPC client to a local service speaks it through `grpc_proxy` or `https_proxy`). When the server turns out to speak only HTTP/1.1, the request goes on as HTTP/1.1. gRPC-Web is decoded too.
 - **WebSockets:** Wirepane takes permessage-deflate out of the client's offer so messages stay readable. A server that insists on compression may refuse; a message that arrives compressed anyway passes on as it came.
+  - **"The WebSocket is not decrypted" (binary messages, base64):** it is decrypted; the app speaks a binary format. Protobuf, bare or after its length, and gzip or zlib around it are decoded on their own. Base64 left means another format (MessagePack, CBOR, the app's own): find its decoder in the app's code.
 - **HTTP/2:** clients that offer h2 get it. When the server speaks only HTTP/1.1, Wirepane talks HTTP/1.1 to it.
 
 ## The Mac has no internet after a crash

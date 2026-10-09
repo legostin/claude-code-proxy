@@ -3,7 +3,7 @@
 // numbers, varints, strings, nested messages), the way `protoc --decode_raw`
 // shows it.
 
-import { gunzipSync } from 'node:zlib'
+import { gunzipSync, inflateSync } from 'node:zlib'
 
 const MAX_DEPTH = 16
 const MAX_TEXT = 4000
@@ -199,4 +199,68 @@ export function viewKindOf(contentType) {
   if (type.startsWith('application/grpc')) return 'grpc'
   if (/^application\/(x-)?protobuf|^application\/x-google-protobuf|^application\/vnd\.google\.protobuf/.test(type)) return 'protobuf'
   return null
+}
+
+// --- binary messages (a WebSocket's): what they hold, without a schema ---------------
+
+const MAX_VIEW = 4000
+
+/** Messages each after its varint length, as protobuf's writeDelimitedTo writes them, filling `buf` exactly; null otherwise. */
+function delimitedMessages(buf) {
+  const messages = []
+  let pos = 0
+  while (pos < buf.length) {
+    const size = readVarint(buf, pos)
+    // an empty message in a run is a weak sign (a gRPC frame's zero bytes look like that)
+    if (!size || size.value > BigInt(buf.length - size.pos) || (size.value === 0n && buf.length > 1)) return null
+    const end = size.pos + Number(size.value)
+    const fields = decodeFields(buf.subarray(size.pos, end))
+    if (!fields) return null
+    messages.push(fields)
+    pos = end
+  }
+  return messages.length ? messages : null
+}
+
+/** gzip or zlib around the bytes: { kind, data } unpacked, or null. */
+function unpacked(buf) {
+  try {
+    if (buf[0] === 0x1f && buf[1] === 0x8b) return { kind: 'gzip', data: gunzipSync(buf) }
+    // a zlib header: deflate, a window size, and a check that makes the first two bytes a multiple of 31
+    if ((buf[0] & 0x0f) === 8 && buf.length > 2 && buf.readUInt16BE(0) % 31 === 0) return { kind: 'zlib', data: inflateSync(buf) }
+  } catch {}
+  return null
+}
+
+function clipped(text) {
+  return text.length > MAX_VIEW ? `${text.slice(0, MAX_VIEW)}… (${text.length} characters)` : text
+}
+
+/**
+ * What a binary message holds, read without its schema: UTF-8 text; protobuf, bare,
+ * after a varint length (writeDelimitedTo), or in a gRPC frame; gzip or zlib around
+ * any of them. { kind, view } with `view` as protoc --decode_raw shows it, or null.
+ */
+export function binaryView(buf, depth = 0) {
+  if (!buf.length || buf.length > 1 << 20) return null
+  const text = readableText(buf)
+  if (text !== null) return { kind: 'text', view: clipped(text) }
+  const inner = depth === 0 ? unpacked(buf) : null
+  if (inner) {
+    const view = binaryView(inner.data, 1)
+    return view ? { kind: `${inner.kind}, ${view.kind}`, view: view.view } : null
+  }
+  // a length that names exactly the bytes after it is the surest sign; bare protobuf decodes from almost anything
+  if (buf.length >= 5 && (buf[0] === 0 || buf[0] === 1) && buf.readUInt32BE(1) === buf.length - 5) {
+    const [frame] = grpcFrames(buf)
+    const view = frame && !frame.isUnreadable ? renderProtobuf(frame.data) : null
+    if (view !== null) return { kind: `protobuf in a gRPC frame${frame.isCompressed ? ', gzipped' : ''}`, view: clipped(view || '(empty)') }
+  }
+  const delimited = delimitedMessages(buf)
+  if (delimited) {
+    const views = delimited.map(fields => renderFields(fields, '', 0).join('\n') || '(empty)')
+    return { kind: delimited.length > 1 ? `${delimited.length} protobuf messages, each after its length` : 'protobuf after its length', view: clipped(views.join('\n---\n')) }
+  }
+  const bare = renderProtobuf(buf)
+  return bare ? { kind: 'protobuf', view: clipped(bare) } : null
 }

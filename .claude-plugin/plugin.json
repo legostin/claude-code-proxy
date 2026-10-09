@@ -1,7 +1,7 @@
 {
   "name": "wirepane",
   "displayName": "Wirepane",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "The debugging proxy Claude can read, inside Claude Code on macOS: HTTPS, HTTP/2, gRPC, WebSockets and server-sent events from the browser, iOS and Android; one-press device setup; rules and mock servers; a doctor that fixes what is in the way; 16 tools and 3 skills for Claude.",
   "author": {
     "name": "Legostin Vyacheslav",
@@ -36,13 +36,13 @@
   "userConfig": {
     "port": {
       "type": "number",
-      "title": "Port",
+      "title": "Proxy port",
       "description": "The port the proxy listens on.",
       "default": 8899
     },
     "listen": {
       "type": "string",
-      "title": "Listen on",
+      "title": "Proxy reachable from",
       "description": "local: this Mac only (browser, simulators, Android emulator). lan: also phones on the same network.",
       "options": [
         "local",
@@ -52,31 +52,31 @@
     },
     "noDecrypt": {
       "type": "string",
-      "title": "Hosts not to decrypt",
+      "title": "Hosts never decrypted",
       "description": "Comma-separated hosts tunnelled untouched (pinned services); *.example.com covers subdomains. Hosts that refuse the certificate twice are passed through on their own.",
       "default": "*.apple.com,*.icloud.com,*.mzstatic.com,*.apple-cloudkit.com"
     },
     "maxFlows": {
       "type": "number",
-      "title": "Requests kept",
+      "title": "Requests to keep",
       "description": "How many of the latest requests the list keeps.",
       "default": 2000
     },
     "insecureHosts": {
       "type": "string",
-      "title": "Accept these upstream certificates",
+      "title": "Hosts with unchecked certificates",
       "description": "Comma-separated hosts whose own certificate is not checked (dev servers with self-signed ones); *.example.com covers subdomains.",
       "default": ""
     },
     "upstreamProxy": {
       "type": "string",
-      "title": "Upstream proxy",
+      "title": "Upstream proxy (office, VPN)",
       "description": "An office's or a VPN's proxy every connection to a server goes through: http://[user:password@]host:port (Basic or Windows NTLM sign-in; DOMAIN\\user as DOMAIN%5Cuser), socks5://[user:password@]host:port, or a PAC file as pac+http://[user:password@]host/proxy.pac (the credentials go to the proxies it names). Empty: servers are reached directly.",
       "default": ""
     },
     "upstreamBypass": {
       "type": "string",
-      "title": "Reach directly",
+      "title": "Hosts that skip the upstream proxy",
       "description": "Comma-separated hosts reached without the upstream proxy (this Mac's own addresses always are); *.example.com covers subdomains.",
       "default": ""
     }

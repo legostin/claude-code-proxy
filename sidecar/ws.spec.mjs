@@ -10,6 +10,7 @@ import https from 'node:https'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { gzipSync } from 'node:zlib'
 import { after, before, describe, test } from 'node:test'
 import tls from 'node:tls'
 
@@ -30,6 +31,7 @@ function attachEcho(server, seen) {
       seen.push({ got: text })
       if (message.opcode === OP.ping) return socket.write(encodeFrame({ opcode: OP.pong, payload: message.data }))
       if (message.opcode === OP.close) return socket.end(encodeFrame({ opcode: OP.close, payload: message.data }))
+      if (message.opcode === OP.binary) return socket.write(encodeFrame({ opcode: OP.binary, payload: message.data }))
       if (text === 'close-me') return socket.end(encodeFrame({ opcode: OP.close, payload: closePayload(4000, 'bye') }))
       if (text.startsWith('{')) return send(OP.text, JSON.stringify({ from: 'server', echoed: JSON.parse(text) }))
       send(OP.text, `echo: ${text}`)
@@ -104,6 +106,7 @@ async function wsClient({ proxyPort, url, ca, how = 'connect', headers = {} }) {
     waitFor,
     send: text => socket.write(encodeFrame({ opcode: OP.text, payload: Buffer.from(text), isMasked: true })),
     sendRaw: bytes => socket.write(bytes),
+    sendBinary: bytes => socket.write(encodeFrame({ opcode: OP.binary, payload: bytes, isMasked: true })),
     sendFragmented: parts =>
       parts.forEach((part, i) =>
         socket.write(encodeFrame({ opcode: i === 0 ? OP.text : OP.continuation, payload: Buffer.from(part), fin: i === parts.length - 1, isMasked: true })),
@@ -186,6 +189,32 @@ describe('WebSockets', () => {
       server.close()
     }
     await rm(dataDir, { recursive: true, force: true })
+  })
+
+  test('a binary message is read without its schema: protobuf after its length, bare, or gzipped text', async () => {
+    const ws = await wsClient({ proxyPort: ready.port, url: `ws://localhost:${wsPort}/binary` })
+    // as on a trading feed: a varint length, then { 1: 13, 2: 2, 3: { 1: "$6731…" } }
+    const delimited = Buffer.from('GwgNEAIaFQoTJDY3MzExODIwODkxNzc0OTc2MA==', 'base64')
+    ws.sendBinary(delimited)
+    await ws.waitFor(() => ws.messages.find(m => m.opcode === OP.binary), 'the binary echo')
+    ws.sendBinary(Buffer.from([0x08, 0x96, 0x01]))
+    ws.sendBinary(gzipSync('{"type":"tick"}'))
+    await ws.waitFor(() => ws.messages.filter(m => m.opcode === OP.binary).length === 3, 'all three echoes')
+    ws.close()
+    const flow = await sidecar.flow(f => f.path === '/binary' && f.state === 'done', 'the binary socket')
+    const binary = (await records(flow)).filter(r => r.op === 'binary')
+    assert.equal(binary.length, 6)
+    const [out, back] = binary
+    assert.equal(out.dir, 'out')
+    assert.equal(back.dir, 'in')
+    for (const record of [out, back]) {
+      assert.equal(record.viewKind, 'protobuf after its length')
+      assert.equal(record.view, '1: 13\n2: 2\n3 {\n  1: "$673118208917749760"\n}')
+      assert.equal(record.b64, delimited.toString('base64'))
+    }
+    // the echoes of the last two may come back after both went out
+    assert.equal(binary.filter(r => r.viewKind === 'protobuf' && r.view === '1: 150').length, 2)
+    assert.equal(binary.filter(r => r.viewKind === 'gzip, text' && r.view === '{"type":"tick"}').length, 2)
   })
 
   test('records each message both ways for ws:// through CONNECT, and offers the server no compression', async () => {

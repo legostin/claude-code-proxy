@@ -65,7 +65,8 @@ The mod reaches these with `curl` through `$.process.run`.
   - Frames are read both ways. Without a message rule each frame goes on at once as it came; with one, data frames are held until the message is whole, the steps apply, and the message goes on as it came or encoded anew (masked toward the server).
   - Control frames pass at once; closes queue behind held messages.
   - Unreadable bytes switch that direction to a raw copy.
-  - The record is `<id>.ws.jsonl`: `{t, dir, op, size, text | b64, code?, note?, was?}`, capped at 20000 lines. Messages are cut at 64 KB, binary at 4 KB of base64.
+  - The record is `<id>.ws.jsonl`: `{t, dir, op, size, text | b64, view?, viewKind?, code?, note?, was?}`, capped at 20000 lines. Messages are cut at 64 KB, binary at 4 KB of base64.
+  - A binary message also gets `view`, read without a schema by `binaryView` (`sidecar/protobuf.mjs`), first fit wins: UTF-8 text; gzip or zlib, then what is inside; a gRPC frame whose length is exact; protobuf messages each after a varint length that fill the bytes exactly (as `writeDelimitedTo` writes them; an exact length is a far surer sign than a bare decode, which almost any bytes pass); bare protobuf. `viewKind` says which. The message line shows the view in place of base64; search looks in it.
   - `wsOut` and `wsIn` count data messages; flow updates are throttled to two a second.
 - **Server-sent events** (`sidecar/sse.mjs`). `text/event-stream` responses without content encoding are parsed as they stream, into `<id>.sse.jsonl` `{t, event?, id?, data, retry?}`, with `sseEvents` on the flow.
 - **Plain HTTP inside CONNECT.** A browser's `ws://` arrives that way. It goes to the inner HTTP/1.1 server with scheme `http`, so it is recorded like any request.

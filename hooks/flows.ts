@@ -77,6 +77,9 @@ export type WsRecord = {
   size: number
   text?: string
   b64?: string
+  /** A binary message read without its schema (protobuf as protoc --decode_raw shows it, or text), and what it was read as. */
+  view?: string
+  viewKind?: string
   code?: number | null
   reason?: string
   isCut?: boolean
@@ -111,9 +114,11 @@ export function wsLine(record: WsRecord, n: number, max = 300): string {
       ? `close ${record.code ?? ''}${record.reason ? ` "${record.reason}"` : ''}`
       : record.text !== undefined
         ? truncate(record.text.replace(/\s*\n\s*/g, ' '), max)
-        : record.b64 !== undefined
-          ? `${record.op} ${record.size}B base64 ${truncate(record.b64, Math.min(max, 120))}`
-          : record.op
+        : record.view !== undefined
+          ? `${record.size}B ${record.viewKind ?? 'decoded'}: ${truncate(record.view.replace(/\s*\n\s*/g, ' '), max)}`
+          : record.b64 !== undefined
+            ? `${record.op} ${record.size}B base64 ${truncate(record.b64, Math.min(max, 120))}`
+            : record.op
   const note = record.note ? `  [${record.note}${record.was !== undefined ? `; was: ${truncate(record.was, 80)}` : ''}]` : ''
   return `${n}. ${seconds(record.t)} ${arrow} ${record.op === 'text' ? '' : `(${record.op}) `}${body}${note}`
 }

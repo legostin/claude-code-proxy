@@ -36,7 +36,8 @@ Wirepane is an HTTPS proxy inside Claude Code. It records what a browser, an iOS
 
 - **gRPC.** Bodies are decoded without a schema, by field number: `1: "hi"`, nested messages indented. A failed call shows `gRPC NOT_FOUND: …` from its trailers. To name the fields, look for the `.proto` files in the repo (`rg -g '*.proto' 'service Greeter'`) and map the numbers.
 - **WebSocket.**
-  - `get_request({ id, part: "messages" })` lists the messages both ways with their timing: `→ server` is client to server, `← client` the other way. Page with `from` and `limit`.
+  - `get_request({ id, part: "messages" })` lists the messages both ways with their timing: `→ server` is client to server, `← client` the other way. Page with `from` and `limit`; `from: n, limit: 1` shows one message in full.
+  - Binary messages show what they hold, read without a schema like gRPC bodies: `protobuf after its length: 1: 13 2: 2 3 { 1: "…" }`, `protobuf`, `gzip, text`. Name the fields from the repo's `.proto` files. Base64 means no reading fit (MessagePack, CBOR, a custom format, or compression Wirepane could not take out).
   - `send_ws_message({ id, to: "client" | "server", text | json })` injects a message into the live socket.
   - `close_websocket({ id, code: 1011 })` tests how the app reconnects.
 - **Server-sent events** (LLM streaming APIs). `get_request` lists the events with the milliseconds at which each one arrived. Use it for slow first tokens, dropped streams and malformed `data:` lines.

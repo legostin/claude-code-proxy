@@ -54,7 +54,7 @@ CERT CONNECT gateway.icloud.com:443                                   0B     0ms
 - **HTTP/2** to clients that offer it, and to servers that speak it. HTTP/1.1 for the rest, both ways independently. Plain-text HTTP/2 (h2c, prior knowledge) too, as a gRPC client speaks it to a local service through the proxy.
 - **gRPC and gRPC-Web**, with trailers forwarded. Bodies are decoded without a schema: field numbers, values, nested messages. A failed call shows its status, `gRPC NOT_FOUND: no such user`.
 - **Protobuf** bodies (`application/x-protobuf`), decoded the same way.
-- **WebSockets**, message by message, both ways, with timing and close codes. Compression is taken out of the offer so every message stays readable. In the detail of a live socket, you can type a message to either side.
+- **WebSockets**, message by message, both ways, with timing and close codes. Compression is taken out of the offer so every message stays readable. Binary messages are read without a schema: protobuf (bare, after its varint length, or in a gRPC frame), text, and gzip or zlib around them; base64 only when nothing fits. In the detail of a live socket, you can type a message to either side.
 - **Server-sent events**, event by event, as they arrive, with the millisecond each one came. Made for LLM streaming APIs.
 - gzip, brotli, deflate and zstd, decoded.
 
@@ -278,13 +278,13 @@ Set them in `/config`, or in `/plugin` → **Installed** → **wirepane** → **
 
 | Option | Default | |
 | --- | --- | --- |
-| Port | `8899` | |
-| Listen on | `local` | `lan` opens it to phones on the network (never to this Mac's localhost) |
-| Hosts not to decrypt | `*.apple.com,*.icloud.com,*.mzstatic.com,*.apple-cloudkit.com` | tunnelled untouched; hosts that refuse the certificate twice are added on their own |
-| Accept these upstream certificates | (none) | dev servers with self-signed certificates, by host |
-| Upstream proxy | (none) | an office's or a VPN's proxy every connection to a server goes through: `http://[user:password@]host:port` (Basic or NTLM, whichever it asks for; a Windows `DOMAIN\user` as `DOMAIN%5Cuser`), `socks5://[user:password@]host:port`, or a PAC file as `pac+http://[user:password@]host/proxy.pac` (the credentials go to the proxies it names, not to the PAC's server) |
-| Reach directly | (none) | hosts reached without the upstream proxy; this Mac's own addresses and `*.local` always are |
-| Requests kept | `2000` | |
+| Proxy port | `8899` | |
+| Proxy reachable from | `local` | `lan` opens it to phones on the network (never to this Mac's localhost) |
+| Hosts never decrypted | `*.apple.com,*.icloud.com,*.mzstatic.com,*.apple-cloudkit.com` | tunnelled untouched; hosts that refuse the certificate twice are added on their own |
+| Hosts with unchecked certificates | (none) | dev servers with self-signed certificates, by host |
+| Upstream proxy (office, VPN) | (none) | an office's or a VPN's proxy every connection to a server goes through: `http://[user:password@]host:port` (Basic or NTLM, whichever it asks for; a Windows `DOMAIN\user` as `DOMAIN%5Cuser`), `socks5://[user:password@]host:port`, or a PAC file as `pac+http://[user:password@]host/proxy.pac` (the credentials go to the proxies it names, not to the PAC's server) |
+| Hosts that skip the upstream proxy | (none) | hosts reached without the upstream proxy; this Mac's own addresses and `*.local` always are |
+| Requests to keep | `2000` | |
 
 ## How it works
 
