@@ -138,6 +138,21 @@ describe('one proxy shared by sessions', () => {
     await assert.rejects(readFile(join(dataDir, 'sidecar.json'), 'utf8'))
   })
 
+  test('the first start on a Mac makes the data folder', { timeout: 20_000 }, async () => {
+    const fresh = join(dataDir, 'never-made', 'proxy-mod')
+    const session = attach(fresh, 'first')
+    try {
+      const ready = await session.waitFor(events => events.find(e => e.t === 'ready' || e.t === 'fatal'), 'ready')
+      assert.equal(ready.t, 'ready', JSON.stringify(ready))
+      assert.ok(JSON.parse(await readFile(join(fresh, 'sidecar.json'), 'utf8')).pid)
+    } finally {
+      session.child.kill()
+      try {
+        process.kill(JSON.parse(await readFile(join(fresh, 'sidecar.json'), 'utf8')).pid)
+      } catch {}
+    }
+  })
+
   test('a port another program holds is said so', { timeout: 20_000 }, async () => {
     const holder = net.createServer()
     await new Promise(resolve => holder.listen(0, '127.0.0.1', resolve))

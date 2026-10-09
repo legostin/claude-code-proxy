@@ -48,7 +48,10 @@ import {
   modelUrl,
   parseRecords,
   type SseRecord,
+  findMatches,
+  findWindow,
   sseLine,
+  splitByMatches,
   streamNote,
   type WsRecord,
   wsLine,
@@ -1308,7 +1311,7 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
   // status 4 + method 7 + gaps; size and time on the right
   const urlWidth = Math.max(12, width - 4 - 1 - 7 - 1 - 17)
 
-  const open = (id: number) => update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'detail', selectedId: id }))
+  const open = (id: number) => update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'detail', selectedId: id, detailTab: undefined, detailSearch: '', detailMatch: 0 }))
   const toggleNode = (id: string) =>
     update($, expandedAtom, list => ((list ?? []).includes(id) ? (list ?? []).filter(x => x !== id) : [...(list ?? []), id]))
   const setLayout = (layout: 'list' | 'tree') => chooseLayout($, layout)
@@ -1536,6 +1539,8 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
 }
 
 const WS_SHOWN = 200
+// how much of a body the find field searches
+const FIND_CHARS = 2_000_000
 
 /** A message typed in the pane, into a live WebSocket. */
 async function sendFromPane($: EngineInterface, id: number, to: 'client' | 'server', text: string): Promise<void> {
@@ -1579,6 +1584,45 @@ async function drawDetail($: EngineInterface, e: PaneEvent, id: number, options:
   const notice = await read($, noticeAtom)
   const events = detail?.sse ? await readRecords<SseRecord>($, detail.sse.file) : []
   const lineWidth = Math.max(40, (e.props.bodyColumns ?? 100) - 4)
+  const view = await read($, viewAtom)
+  const reqType = detail?.reqHeaders.find(([k]) => k.toLowerCase() === 'content-type')?.[1] ?? null
+
+  // the tabs: the request, the response, and a socket's messages or a stream's events
+  type DetailTab = NonNullable<ProxyView['detailTab']>
+  const tabs: { tab: DetailTab; label: string }[] = [
+    { tab: 'request', label: 'Request' },
+    { tab: 'response', label: flow.status !== null ? `Response · ${flow.status}` : 'Response' },
+    ...(detail?.ws ? [{ tab: 'messages' as const, label: `Messages · ${streamNote(flow) || '0'}` }] : []),
+    ...(detail?.sse ? [{ tab: 'events' as const, label: `Events · ${events.length}` }] : []),
+  ]
+  const fallback: DetailTab = detail?.ws ? 'messages' : detail?.sse ? 'events' : flow.state === 'error' && !detail?.resHeaders.length ? 'request' : 'response'
+  const tab: DetailTab = tabs.some(t => t.tab === view.detailTab) ? view.detailTab! : fallback
+  const setTab = (next: DetailTab) => () => void update($, viewAtom, (v): ProxyView => ({ ...v, detailTab: next, detailMatch: 0 }))
+
+  // find: the tab as lines (headers, then the body as shown), every match, and the window around the current one
+  const search = view.detailSearch ?? ''
+  const headerLines = (headers: readonly [string, string][]) => headers.map(([name, value]) => `${name}: ${value}`)
+  const bodyLines = (body: typeof reqBody, contentType: string | null) =>
+    body?.text != null ? prettyBody(body.text.slice(0, FIND_CHARS), contentType).split('\n') : body?.note ? [body.note] : []
+  const tabLines = !detail || !search
+    ? []
+    : tab === 'request'
+      ? [...headerLines(detail.reqHeaders), '', ...bodyLines(reqBody, reqType)]
+      : tab === 'response'
+        ? [...headerLines(detail.resHeaders), '', ...bodyLines(resBody, flow.contentType), ...(detail.resTrailers?.length ? ['', 'trailers', ...headerLines(detail.resTrailers)] : [])]
+        : tab === 'messages'
+          ? messages.map((record, i) => wsLine(record, i + 1, 4000))
+          : events.map((record, i) => sseLine(record, i + 1, 4000))
+  const found = findMatches(tabLines, search)
+  const current = found.length ? (((view.detailMatch ?? 0) % found.length) + found.length) % found.length : -1
+  const currentMatch = current >= 0 ? found[current]! : null
+  const shownLines = findWindow(tabLines.length, currentMatch?.line ?? null, BODY_LINES)
+  const marksByLine = new Map<number, { match: (typeof found)[number]; n: number }[]>()
+  found.forEach((match, n) => {
+    if (match.line < shownLines.from || match.line >= shownLines.to) return
+    marksByLine.set(match.line, [...(marksByLine.get(match.line) ?? []), { match, n }])
+  })
+  const step = (by: number) => () => void update($, viewAtom, (v): ProxyView => ({ ...v, detailMatch: (v.detailMatch ?? 0) + by }))
 
   const headerRows = (headers: readonly [string, string][], prefix: string) =>
     headers.map(([name, value], i) => (
@@ -1671,34 +1715,102 @@ async function drawDetail($: EngineInterface, e: PaneEvent, id: number, options:
       ) : null}
       {detail ? (
         <Box flexDirection="column" marginTop={1}>
-          <Text bold underline>Request</Text>
-          {headerRows(detail.reqHeaders, 'req')}
-          {detail.req || flow.kind === 'http' ? bodyBlock(reqBody, detail.reqHeaders.find(([k]) => k.toLowerCase() === 'content-type')?.[1] ?? null, 'req-body') : null}
-          <Box marginTop={1}>
-            <Text bold underline>Response</Text>
+          <Box flexDirection="row" gap={1}>
+            {tabs.map((t, i) => (
+              <Button key={`tab-${t.tab}`} hotkey={String(i + 1)} label={t.label} variant={t.tab === tab ? 'primary' : undefined} onPress={setTab(t.tab)} />
+            ))}
           </Box>
-          {detail.resHeaders.length ? headerRows(detail.resHeaders, 'res') : <Text dimColor>no headers yet</Text>}
-          {flow.kind === 'http' ? bodyBlock(resBody, flow.contentType, 'res-body') : null}
-          {detail.resTrailers?.length ? (
-            <Box flexDirection="column" marginTop={1}>
-              <Text bold>Trailers</Text>
-              {headerRows(detail.resTrailers, 'trailer')}
+          {Input ? (
+            <Box flexDirection="row" gap={1}>
+              <Box flexGrow={1}>
+                <Input
+                  key="find"
+                  label="Find "
+                  placeholder={tab === 'messages' ? 'text in the messages' : tab === 'events' ? 'text in the events' : `text in the ${tab}'s headers and body`}
+                  value={search}
+                  submitLabel="next"
+                  onInput={value => void update($, viewAtom, (v): ProxyView => ({ ...v, detailSearch: value, detailMatch: 0 }))}
+                  onSubmit={value =>
+                    void update($, viewAtom, (v): ProxyView =>
+                      value === (v.detailSearch ?? '') ? { ...v, detailMatch: (v.detailMatch ?? 0) + 1 } : { ...v, detailSearch: value, detailMatch: 0 },
+                    )
+                  }
+                />
+              </Box>
+              {search && found.length > 1 ? <Button key="find-previous" hotkey="k" label="↑" onPress={step(-1)} /> : null}
+              {search && found.length > 1 ? <Button key="find-next" hotkey="j" label="↓" onPress={step(1)} /> : null}
+              {search ? <Button key="find-clear" label="✕" onPress={() => void update($, viewAtom, (v): ProxyView => ({ ...v, detailSearch: '', detailMatch: 0 }))} /> : null}
             </Box>
           ) : null}
-          {detail.ws ? (
-            <Box flexDirection="column" marginTop={1}>
-              <Text bold underline>
-                Messages · {streamNote(flow) || 'none yet'}
-                {detail.ws.isMock ? ' · Wirepane plays the server' : ''}
-                {detail.ws.close ? ` · closed ${detail.ws.close.code ?? ''} by ${detail.ws.close.by}` : ''}
+          {search ? (
+            found.length ? (
+              <Text dimColor>
+                {current + 1} of {found.length}
+                {found.length >= 10_000 ? '+' : ''} · line {currentMatch!.line + 1}
+                {found.length > 1 ? ' · j/↓ next, k/↑ previous, Enter next' : ''}
               </Text>
-              {messages.length > WS_SHOWN ? <Text dimColor>…the first {messages.length - WS_SHOWN} are in {detail.ws.file}</Text> : null}
-              {messages.slice(-WS_SHOWN).map((record, i, shown) => (
-                <Text key={`ws-${i}`} color={record.note ? 'warning' : record.dir === 'out' ? 'claude' : undefined}>
-                  {wsLine(record, messages.length - shown.length + i + 1, lineWidth)}
-                </Text>
-              ))}
-              {messages.length === 0 ? <Text dimColor>No messages yet.</Text> : null}
+            ) : (
+              <Text color="warning">Nothing matches "{search}" here.</Text>
+            )
+          ) : null}
+          {search && found.length ? (
+            <Box flexDirection="column" marginTop={1}>
+              {shownLines.from > 0 ? <Text dimColor>…{shownLines.from} lines above</Text> : null}
+              {tabLines.slice(shownLines.from, shownLines.to).map((text, i) => {
+                const line = shownLines.from + i
+                const marks = marksByLine.get(line) ?? []
+                if (marks.length === 0) return <Text key={`find-line-${line}`}>{text || ' '}</Text>
+                return (
+                  <Text key={`find-line-${line}`}>
+                    {splitByMatches(text, marks).map((piece, k) =>
+                      piece.n === null ? (
+                        piece.text
+                      ) : (
+                        <Text key={`find-mark-${line}-${k}`} backgroundColor={piece.n === current ? 'warning' : undefined} color={piece.n === current ? 'inverseText' : undefined} inverse={piece.n !== current}>
+                          {piece.text}
+                        </Text>
+                      ),
+                    )}
+                  </Text>
+                )
+              })}
+              {shownLines.to < tabLines.length ? <Text dimColor>…{tabLines.length - shownLines.to} lines below</Text> : null}
+            </Box>
+          ) : tab === 'request' ? (
+            <Box flexDirection="column" marginTop={1}>
+              {headerRows(detail.reqHeaders, 'req')}
+              {detail.req || flow.kind === 'http' ? bodyBlock(reqBody, reqType, 'req-body') : null}
+            </Box>
+          ) : tab === 'response' ? (
+            <Box flexDirection="column" marginTop={1}>
+              {detail.resHeaders.length ? headerRows(detail.resHeaders, 'res') : <Text dimColor>no headers yet</Text>}
+              {flow.kind === 'http' ? bodyBlock(resBody, flow.contentType, 'res-body') : null}
+              {detail.resTrailers?.length ? (
+                <Box flexDirection="column" marginTop={1}>
+                  <Text bold>Trailers</Text>
+                  {headerRows(detail.resTrailers, 'trailer')}
+                </Box>
+              ) : null}
+            </Box>
+          ) : null}
+          {detail.ws && tab === 'messages' ? (
+            <Box flexDirection="column" marginTop={1}>
+              <Text dimColor>
+                {streamNote(flow) || 'no messages yet'}
+                {detail.ws.isMock ? ' · Wirepane plays the server' : ''}
+                {detail.ws.close ? ` · closed ${detail.ws.close.code ?? ''} by ${detail.ws.close.by}` : ''} · → client to server, ← server to client
+              </Text>
+              {search ? null : (
+                <Box flexDirection="column">
+                  {messages.length > WS_SHOWN ? <Text dimColor>…the first {messages.length - WS_SHOWN} are in {detail.ws.file}</Text> : null}
+                  {messages.slice(-WS_SHOWN).map((record, i, shown) => (
+                    <Text key={`ws-${i}`} color={record.note ? 'warning' : record.dir === 'out' ? 'claude' : undefined}>
+                      {wsLine(record, messages.length - shown.length + i + 1, lineWidth)}
+                    </Text>
+                  ))}
+                  {messages.length === 0 ? <Text dimColor>No messages yet.</Text> : null}
+                </Box>
+              )}
               {Input && flow.state !== 'done' && flow.state !== 'error' ? (
                 <Box flexDirection="column" marginTop={1}>
                   <Input
@@ -1722,13 +1834,13 @@ async function drawDetail($: EngineInterface, e: PaneEvent, id: number, options:
               ) : null}
             </Box>
           ) : null}
-          {detail.sse ? (
+          {detail.sse && tab === 'events' && !search ? (
             <Box flexDirection="column" marginTop={1}>
-              <Text bold underline>Events · {events.length}</Text>
               {events.length > WS_SHOWN ? <Text dimColor>…the first {events.length - WS_SHOWN} are in {detail.sse.file}</Text> : null}
               {events.slice(-WS_SHOWN).map((record, i, shown) => (
                 <Text key={`sse-${i}`}>{sseLine(record, events.length - shown.length + i + 1, lineWidth)}</Text>
               ))}
+              {events.length === 0 ? <Text dimColor>No events yet.</Text> : null}
             </Box>
           ) : null}
         </Box>

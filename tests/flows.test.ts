@@ -14,6 +14,9 @@ import {
   splitLines,
   statusLabel,
   toCurl,
+  findMatches,
+  findWindow,
+  splitByMatches,
   typeOf,
   wsLine,
 } from '../hooks/flows'
@@ -178,6 +181,40 @@ describe('formats', () => {
     expect(clip('a\nb\nc', 2, 100)).toEqual({ text: 'a\nb', isClipped: true })
     expect(clip('abcdef', 10, 3)).toEqual({ text: 'abc', isClipped: true })
     expect(clip('ok', 10, 10)).toEqual({ text: 'ok', isClipped: false })
+  })
+})
+
+describe('find in a request', () => {
+  const lines = ['content-type: application/json', '', '{', '  "error": "invalid_credentials",', '  "hint": "Invalid password"', '}']
+
+  test('every match, case aside, in reading order', () => {
+    expect(findMatches(lines, 'invalid')).toEqual([
+      { line: 3, start: 12, end: 19 },
+      { line: 4, start: 11, end: 18 },
+    ])
+    expect(findMatches(lines, '')).toEqual([])
+    expect(findMatches(['aaaa'], 'aa')).toEqual([
+      { line: 0, start: 0, end: 2 },
+      { line: 0, start: 2, end: 4 },
+    ])
+    expect(findMatches(['x x x'], 'x', 2)).toHaveLength(2)
+  })
+
+  test('the window starts a few lines above the current match, and holds still near the end', () => {
+    expect(findWindow(1000, null, 200)).toEqual({ from: 0, to: 200 })
+    expect(findWindow(1000, 500, 200)).toEqual({ from: 497, to: 697 })
+    expect(findWindow(1000, 990, 200)).toEqual({ from: 800, to: 1000 })
+    expect(findWindow(50, 40, 200)).toEqual({ from: 0, to: 50 })
+  })
+
+  test('a line in pieces, each match with its number', () => {
+    const marks = findMatches(lines, 'invalid').map((match, n) => ({ match, n })).filter(m => m.match.line === 3)
+    expect(splitByMatches(lines[3]!, marks)).toEqual([
+      { text: '  "error": "', n: null },
+      { text: 'invalid', n: 0 },
+      { text: '_credentials",', n: null },
+    ])
+    expect(splitByMatches('plain', [])).toEqual([{ text: 'plain', n: null }])
   })
 })
 

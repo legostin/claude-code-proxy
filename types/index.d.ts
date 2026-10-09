@@ -155,6 +155,10 @@ export type ProxyView = {
   device?: 'virtual' | 'real'
   /** In the rules view: the rule whose ✕ was pressed, waiting for Remove or Keep. */
   removing?: string | null
+  /** In a request's detail: the tab shown (its own default when unset), the text found in it, and which match is current. */
+  detailTab?: 'request' | 'response' | 'messages' | 'events'
+  detailSearch?: string
+  detailMatch?: number
 }
 
 declare module 'claude-code' {

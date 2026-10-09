@@ -231,6 +231,12 @@ Terms separated by spaces must all hold; a leading `-` negates one. Free text ma
 | `is:error\|ok\|pending\|tunnel\|ws\|https\|h2\|grpc\|held\|rejected\|modified` | the state (`error` includes failed gRPC calls; `held`: waiting at a breakpoint) |
 | `client:192.168.1.20`, `rule:slow-feed` | the client, a rule |
 
+## A request's detail
+
+A row opens its detail: the status, the timing, what the rules did, and tabs for **Request** and **Response**, plus **Messages** for a WebSocket and **Events** for a stream (keys `1` to `4`). It opens on the response, or on the messages or the events.
+
+**Find** searches the tab you are on, case aside: the headers and the body as shown (pretty JSON), or the messages. Every match is marked, the current one brighter, with `3 of 14 · line 340`. Enter or `j` goes to the next, `k` to the one before, and the body scrolls to it, however deep. It stays as you switch tabs, so you can look for the same token in the request and the response.
+
 ## Tracked domains
 
 A phone talks to dozens of hosts. Turn on the tracking list and the proxy decrypts and records only your app's domains. Everything else passes through untouched and unrecorded.

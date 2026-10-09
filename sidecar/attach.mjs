@@ -13,7 +13,7 @@
 // when it cannot be had or goes away.
 
 import { spawn } from 'node:child_process'
-import { closeSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from 'node:fs'
+import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from 'node:fs'
 import http from 'node:http'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -37,6 +37,8 @@ if (!data) {
   process.stderr.write('--data <dir> is required\n')
   process.exit(2)
 }
+// the first start on a Mac: the folder for the registry, the lock and the log is not there yet
+mkdirSync(data, { recursive: true })
 const registryFile = join(data, 'sidecar.json')
 const lockFile = join(data, 'sidecar.lock')
 const logFile = join(data, 'sidecar.log')

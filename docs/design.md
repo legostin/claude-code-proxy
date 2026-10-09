@@ -174,8 +174,18 @@ The pane has three views:
 1. The list: a header `● 127.0.0.1:8899 · 342 requests` (`27 of 342 requests
    match` under a filter), [Stop/Start] [Clear] [Setup], the filter field,
    rows `401 POST https://api.x.com/v1/login 1.2KB 180ms`, newest first.
-2. Detail: the request line, request and response headers, bodies as `Code`
-   (JSON pretty-printed), [Back] [Copy as curl] [URL] [To prompt].
+2. Detail: the request line, the status and timing, what the rules did, then
+   tabs [Request] [Response] (and [Messages] for a WebSocket, [Events] for a
+   stream; keys 1-4, the response or the stream first; `detailTab` in the
+   view): headers and the body as `Code` (JSON pretty-printed). [Back] [Copy
+   as curl] [URL] [To prompt]. **Find** (`detailSearch`, `detailMatch`)
+   searches the tab as lines, headers then the body as shown (up to 2 MB), or
+   the message lines, case aside (`findMatches` in `hooks/flows.ts`). While it
+   is set the tab draws as plain lines, every match an inverse `Text` nested
+   in its line and the current one on the warning color, in a window of 200
+   lines that starts three above the current match (`findWindow`). Enter and
+   j go to the next, k back; the count wraps. The text stays across tabs and
+   is cleared when another request opens.
 3. Setup, in tabs [Browser] [iOS] [Android] [macOS / CLI]:
    - Browser: an [Open <browser>] button per Chromium browser found (Chrome,
      Chrome Canary, Chromium, Edge, Brave), started with its own

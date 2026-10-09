@@ -470,6 +470,52 @@ export function clip(text: string, maxLines: number, maxChars: number): { text: 
   return { text: out, isClipped: out.length < text.length }
 }
 
+// --- find in a request ------------------------------------------------------------
+
+/** One occurrence of the text searched for: its line and where it starts and ends. */
+export type FindMatch = { line: number; start: number; end: number }
+
+/** Every occurrence of `query` in `lines`, case aside, in reading order; at most `limit`. */
+export function findMatches(lines: readonly string[], query: string, limit = 10_000): FindMatch[] {
+  const needle = query.toLowerCase()
+  const out: FindMatch[] = []
+  if (!needle) return out
+  for (let line = 0; line < lines.length && out.length < limit; line++) {
+    const text = lines[line]!
+    const hay = text.toLowerCase()
+    // a lower case that changes the length (a few scripts) would shift the marks: search as it is
+    const source = hay.length === text.length ? hay : text
+    const wanted = hay.length === text.length ? needle : query
+    let at = source.indexOf(wanted)
+    while (at >= 0 && out.length < limit) {
+      out.push({ line, start: at, end: at + wanted.length })
+      at = source.indexOf(wanted, at + wanted.length)
+    }
+  }
+  return out
+}
+
+/** The lines to show, `size` of `total`: from the top, or starting a few lines above the current match. */
+export function findWindow(total: number, matchLine: number | null, size: number): { from: number; to: number } {
+  if (matchLine === null || total <= size) return { from: 0, to: Math.min(total, size) }
+  const from = Math.max(0, Math.min(matchLine - 3, total - size))
+  return { from, to: from + size }
+}
+
+/** A line in pieces: plain text, and each match with its number among all of them. */
+export function splitByMatches(text: string, matches: readonly { match: FindMatch; n: number }[]): { text: string; n: number | null }[] {
+  const pieces: { text: string; n: number | null }[] = []
+  let at = 0
+  for (const { match, n } of [...matches].sort((a, b) => a.match.start - b.match.start)) {
+    if (match.start < at) continue
+    if (match.start > at) pieces.push({ text: text.slice(at, match.start), n: null })
+    pieces.push({ text: text.slice(match.start, match.end), n })
+    at = match.end
+  }
+  if (at < text.length || pieces.length === 0) pieces.push({ text: text.slice(at), n: null })
+  return pieces
+}
+
 // --- the tree view ---------------------------------------------------------------
 //
 // Requests grouped by origin, then by path segment, the way a file tree groups
