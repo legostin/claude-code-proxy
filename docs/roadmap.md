@@ -9,9 +9,14 @@ What comes next, in order. Each item says what changes for the person using it, 
 **Next.** The proxy stays one: one port, one CA, one process, one capture on disk. Each session gets its own list.
 
 - **What a session sees.** By default, the requests that arrived after it attached and that match its own scope. A **Show all sessions** switch in the pane (and `scope: "all"` in the tools) shows the whole capture.
-- **The scope of a session.** Possible pieces, to settle in the design:
-  - its own tracked domains (today tracking is one global list in `~/.claude/proxy-mod/tracking.json`);
-  - the clients it claims, such as "this session is the iOS Simulator, that one is the Android emulator";
+- **Tracked domains, per session.** Each session has its own set, and it works for that session alone. Today the set is one global list in `~/.claude/proxy-mod/tracking.json`, and `track_domains` in one session changes it for all.
+  - The proxy decrypts and records a host when at least one attached session tracks it, or when some session tracks nothing (it wants everything). The rest pass through untouched, as today.
+  - A session's list holds the hosts of its own set. A session that tracks nothing sees everything.
+  - "Passed through" (the hosts offered for tracking in the Domains view and in the doctor) is per session too: the hosts this session's set left out.
+  - `track_domains`, the Domains view and the doctor's tracking findings act on this session's set.
+  - The set must survive `/clear`. This is what broke before: tracking was keyed by the session id, `/clear` changed the id, and the domain filter stopped working. So the set is keyed by the project folder (two sessions in one folder share it), or carried over by `reattach`.
+- **More of the scope**, to settle in the design:
+  - the clients a session claims, such as "this session is the iOS Simulator, that one is the Android emulator";
   - its project's rules: requests its rules changed always belong to it.
 - **Claude's tools.** `list_requests`, `search_requests`, `wait_for_request`, `diff_requests` and `export_har` work on the session's own list. `get_request` and `replay_request` still reach any id, so a request one session points to can be opened from another.
 - **Clear** clears this session's list only. The capture on disk is kept for the others and goes as it does today (two days after its last use).
@@ -21,7 +26,7 @@ What comes next, in order. Each item says what changes for the person using it, 
 
 - The sidecar tags each flow, as it is recorded, with the sessions whose scope it matches. The `flow` event carries the tags, and the backlog a session gets on attach is filtered by them.
 - A session's scope must survive `/clear`: the session id changes then, and `$.state` resets. It has to be keyed by something that stays, such as the project folder, or carried over by `reattach`, which already follows the id change.
-- The tests: two attached sessions with different scopes see different lists; `/clear` keeps the scope; Clear in one leaves the other's list whole; Show all sees everything.
+- The tests: two attached sessions with different tracked domains each record and list their own hosts, and a host neither tracks passes through; a session that tracks nothing sees everything; `track_domains` in one leaves the other's set alone; `/clear` keeps the set; Clear in one leaves the other's list whole; Show all sees everything.
 - Docs to change once it ships: README "One proxy for every session", the site's sessions section (the line "a second session attaches and sees everything the first recorded"), and `docs/design.md`.
 
 ## Also open
