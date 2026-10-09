@@ -89,7 +89,7 @@ export function urlOf(target) {
   return `${target.scheme}://${target.host}${isDefault ? '' : `:${target.port}`}${target.path}`
 }
 
-function setUrl(target, url) {
+export function setUrl(target, url) {
   const parsed = new URL(url)
   target.scheme = parsed.protocol === 'https:' ? 'https' : 'http'
   target.host = parsed.hostname.replace(/^\[|\]$/g, '')
@@ -109,7 +109,7 @@ export function setHeader(headers, name, value) {
   headers.splice(0, headers.length, ...kept)
 }
 
-function hostHeader(target) {
+export function hostHeader(target) {
   const isDefault = (target.scheme === 'https' && target.port === 443) || (target.scheme === 'http' && target.port === 80)
   return isDefault ? target.host : `${target.host}:${target.port}`
 }
@@ -237,7 +237,7 @@ function bodyText(value) {
  * parts, `body` a Buffer when it was read whole. Returns the rules that
  * applied, in order; `log(ruleId, text)` records each step.
  */
-export async function applyRequestRules(rules, state, { projectRoot, signal, log }) {
+export async function applyRequestRules(rules, state, { projectRoot, signal, log, hold }) {
   for (const rule of rules) {
     for (const action of rule.request ?? []) {
       if (state.fail || signal?.aborted) return
@@ -326,6 +326,10 @@ export async function applyRequestRules(rules, state, { projectRoot, signal, log
           state.fail = action.kind
           note()
           return
+        case 'breakpoint':
+          // held until the person or Claude lets it go (hold says how), or its time runs out
+          if (hold) note(await hold(rule.id, action, state))
+          break
         case 'script': {
           const req = {
             method: state.method,
@@ -377,7 +381,7 @@ export async function applyRequestRules(rules, state, { projectRoot, signal, log
  * response was read whole (body actions need it) and undefined while it
  * streams.
  */
-export async function applyResponseRules(rules, state, { projectRoot, signal, log }) {
+export async function applyResponseRules(rules, state, { projectRoot, signal, log, hold }) {
   for (const rule of rules) {
     for (const action of rule.response ?? []) {
       if (state.fail || signal?.aborted) return
@@ -433,6 +437,10 @@ export async function applyResponseRules(rules, state, { projectRoot, signal, lo
           state.fail = action.kind
           note()
           return
+        case 'breakpoint':
+          // held until the person or Claude lets it go (hold says how), or its time runs out
+          if (hold) note(await hold(rule.id, action, state))
+          break
         case 'script': {
           const res = {
             status: state.status,

@@ -13,6 +13,7 @@ import { after, before, describe, test } from 'node:test'
 import { createLeafFactory, ensureCA } from './certs.mjs'
 import { curl, grpcCall, h2Through, listen, pbString, startSidecar } from './spec-kit.mjs'
 import http from 'node:http'
+import { once } from 'node:events'
 
 describe('HTTP/2', () => {
   let dataDir
@@ -236,6 +237,68 @@ describe('HTTP/2', () => {
       assert.equal(refused, 1)
     } finally {
       picky.close()
+    }
+  })
+
+  test('plain HTTP/2 (h2c, prior knowledge) through CONNECT: gRPC to a local service, recorded', async () => {
+    // a plain-text gRPC service, as local development runs one
+    const plain = http2.createServer()
+    plain.on('stream', (stream, headers) => {
+      stream.on('error', () => {})
+      const chunks = []
+      stream.on('data', chunk => chunks.push(chunk))
+      stream.on('end', () => {
+        stream.respond({ ':status': 200, 'content-type': 'application/grpc' }, { waitForTrailers: true })
+        stream.on('wantTrailers', () => stream.sendTrailers({ 'grpc-status': '0' }))
+        const reply = pbString(1, `plain ${headers[':scheme']}`)
+        const head = Buffer.alloc(5)
+        head.writeUInt32BE(reply.length, 1)
+        stream.end(Buffer.concat([head, reply]))
+      })
+    })
+    const plainPort = await listen(plain)
+    try {
+      const req = http.request({ host: '127.0.0.1', port: ready.port, method: 'CONNECT', path: `localhost:${plainPort}` })
+      req.end()
+      const [, tunnel] = await once(req, 'connect')
+      const session = http2.connect(`http://localhost:${plainPort}`, { createConnection: () => tunnel })
+      session.on('error', () => {})
+      try {
+        const reply = await grpcCall(session, '/pkg.Local/Say', pbString(1, 'dev'))
+        assert.equal(reply.trailers?.['grpc-status'], '0')
+        assert.equal(reply.body.subarray(7).toString(), 'plain http')
+      } finally {
+        session.close()
+      }
+      const flow = await sidecar.flow(f => f.path === '/pkg.Local/Say' && f.state === 'done', 'the h2c flow')
+      assert.equal(flow.scheme, 'http')
+      assert.equal(flow.httpVersion, '2')
+      assert.equal(flow.grpcStatus, 0)
+    } finally {
+      plain.close()
+    }
+  })
+
+  test('an h2c client reaches a plain server that speaks HTTP/1.1 only', async () => {
+    const old = http.createServer((req, res) => res.end(`h1 plain got ${req.httpVersion}`))
+    const oldPort = await listen(old)
+    try {
+      const req = http.request({ host: '127.0.0.1', port: ready.port, method: 'CONNECT', path: `localhost:${oldPort}` })
+      req.end()
+      const [, tunnel] = await once(req, 'connect')
+      const session = http2.connect(`http://localhost:${oldPort}`, { createConnection: () => tunnel })
+      session.on('error', () => {})
+      try {
+        const stream = session.request({ ':method': 'GET', ':path': '/plain-old' })
+        let body = ''
+        stream.on('data', chunk => (body += chunk))
+        await once(stream, 'end')
+        assert.equal(body, 'h1 plain got 1.1')
+      } finally {
+        session.close()
+      }
+    } finally {
+      old.close()
     }
   })
 })

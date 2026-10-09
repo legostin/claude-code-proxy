@@ -57,6 +57,8 @@ let ruledFlow = false
 let waitFlows: ProxyFlow[] = []
 // another session shares the proxy
 let withOtherSession = false
+// a request held at a breakpoint
+let withHeld = false
 // streams: a WebSocket, a gRPC call and server-sent events join the flows the fake sidecar sends
 let withStreams = false
 const STREAM_FLOWS = [
@@ -155,7 +157,13 @@ function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string
     const skipped = { t: 'skipped', hosts: { 'gateway.icloud.com': 12, 'api.kolesa.kz': 3 } }
     const attached = { t: 'attached', pid: 777, proxyPid: 4242, isStarted: !withOtherSession }
     const sessions = { t: 'sessions', sessions: [{ session: 'session', project: ROOT, since: 0 }, ...(withOtherSession ? [{ session: 'other', project: '/work/other-app', since: 0 }] : [])] }
-    const text = [attached, { ...READY, isShared: true }, sessions, ...sent.map(f => ({ t: 'flow', flow: f })), skipped].map(event => `${JSON.stringify(event)}\n`).join('')
+    const held = withHeld
+      ? [
+          { t: 'flow', flow: { ...LOGIN, held: 'request', status: null, state: 'pending' } },
+          { t: 'held', id: 2, phase: 'request', since: 0, view: { method: 'POST', url: 'https://api.example.com/v1/login', headers: [['Content-Type', 'application/json']], body: '{"user":"tester"}' } },
+        ]
+      : []
+    const text = [attached, { ...READY, isShared: true }, sessions, ...sent.map(f => ({ t: 'flow', flow: f })), ...held, skipped].map(event => `${JSON.stringify(event)}\n`).join('')
     // cut mid-line, as a pipe may
     yield { stream: 'stdout' as const, text: text.slice(0, 50) }
     yield { stream: 'stdout' as const, text: text.slice(50) }
@@ -193,6 +201,10 @@ function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string
     }
     if (line === 'adb devices') return ok('List of devices attached\nemulator-5554\tdevice\n')
     if (e.argv[0] === 'curl' && line.includes('/__wirepane/tok3n/flows/wait')) return ok(JSON.stringify({ flows: waitFlows }))
+    if (e.argv[0] === 'curl' && line.includes('/__wirepane/tok3n/held/resume')) {
+      const body = JSON.parse(e.init?.stdin ?? '{}') as { id: number }
+      return ok(body.id === 2 ? '{"ok":true}' : `{"error":"request #${body.id} is not held","held":[2]}`)
+    }
     if (e.argv[0] === 'curl' && line.includes('/__wirepane/tok3n/info')) {
       return ok(JSON.stringify({
         pid: 4242, version: '0.8.0', isShared: true, uptimeMs: 3_900_000, memory: { rss: 52_428_800 }, flows: 3, diskBytes: 2_097_152, websockets: 0, pinned: 0,
@@ -1047,5 +1059,42 @@ test('the doctor names what is in the way, the Health view fixes it, and a sessi
     await ui.unmount()
   } finally {
     withOtherSession = false
+  }
+})
+
+test('a request held at a breakpoint shows in the list and the Held view, and Claude or a press lets it go', SLOW, async ($, on) => {
+  withHeld = true
+  try {
+    const clock = mock.clock(on)
+    const machine = fakeMachine(on, clock)
+    const ui = await $.ui.mount({ plugin: 'wirepane', surface: 'terminal', ...PANE })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(250)
+
+    const listed = String((await $.tool.call({ tool: 'mcp__wirepane__list_requests', filter: 'is:held' })).result)
+    expect(listed).toContain('#2  POST    HELD https://api.example.com/v1/login')
+    const shown = String((await $.tool.call({ tool: 'mcp__wirepane__get_request', id: 2, part: 'summary' })).result)
+    expect(shown).toContain('--- HELD at the request breakpoint')
+    expect(shown).toContain('"user": "tester"')
+
+    const resumed = String((await $.tool.call({ tool: 'mcp__wirepane__resume_request', id: 2, changes: { json: { user: 'admin' } } })).result)
+    expect(resumed).toContain('#2 let go with your changes.')
+    const curl = machine.ran.find(command => command.includes('/__wirepane/tok3n/held/resume'))!
+    expect(curl).toContain('http://127.0.0.1:8899/__wirepane/tok3n/held/resume')
+    const missing = String((await $.tool.call({ tool: 'mcp__wirepane__resume_request', id: 9 })).result)
+    expect(missing).toContain('Not let go: request #9 is not held. Held now: #2.')
+
+    expect((await ui.find({ key: 'held' }))?.text).toBe('⏸ 1 held')
+    await ui.press({ key: 'held' })
+    expect(await ui.find({ text: /^Held at a breakpoint · 1/ })).toBeDefined()
+    expect(await ui.find({ text: /#2 POST https:\/\/api\.example\.com\/v1\/login/ })).toBeDefined()
+    await ui.press({ key: 'held-cut:2' })
+    expect(await ui.find({ text: '#2 is cut.' })).toBeDefined()
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(200)
+    await ui.unmount()
+  } finally {
+    withHeld = false
   }
 })

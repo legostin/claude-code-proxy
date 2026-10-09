@@ -8,6 +8,7 @@ import type {
   ProxyDevices,
   ProxyFlow,
   ProxyHealth,
+  ProxyHeld,
   ProxyRuleEntry,
   ProxyRules,
   ProxySession,
@@ -143,6 +144,8 @@ const rulesAtom = atom({ plugin: 'wirepane', key: 'rules' } as const, { file: nu
 const sessionsAtom = atom({ plugin: 'wirepane', key: 'sessions' } as const, [] as ProxySession[])
 /** Hosts the proxy passes through after they refused the certificate. */
 const pinnedAtom = atom({ plugin: 'wirepane', key: 'pinned' } as const, [] as { client: string | null; host: string }[])
+/** Exchanges held at a breakpoint now, until someone lets them go. */
+const heldAtom = atom({ plugin: 'wirepane', key: 'held' } as const, [] as ProxyHeld[])
 const healthAtom = atom({ plugin: 'wirepane', key: 'health' } as const, { checkedAt: null, findings: [], process: null } as ProxyHealth)
 
 // Every function that takes `$` lives in this file: the engine follows `$`
@@ -398,6 +401,13 @@ async function startProxy($: EngineInterface, options: Options): Promise<void> {
             await update($, pinnedAtom, list => [...(list ?? []).filter(p => !(p.client === event.client && p.host === event.host)), { client: event.client, host: event.host }])
           } else if (event.t === 'unpinned') {
             await update($, pinnedAtom, list => (list ?? []).filter(p => !(p.client === event.client && p.host === event.host)))
+          } else if (event.t === 'held') {
+            const { t, ...held } = event
+            void t
+            await update($, heldAtom, list => [...(list ?? []).filter(h => h.id !== held.id), held])
+            $.ui.toast(`proxy: ${held.view.method} ${held.view.url.replace(/^https?:\/\//, '')} is held at a breakpoint`)
+          } else if (event.t === 'released') {
+            await update($, heldAtom, list => (list ?? []).filter(h => h.id !== event.id))
           } else if (event.t === 'cleared') {
             rt.pending.clear()
             await update($, flowsAtom, () => [])
@@ -1275,6 +1285,7 @@ async function drawPane($: EngineInterface, e: PaneEvent, options: Options): Pro
   if (view.mode === 'rules') return drawRules($, e)
   if (view.mode === 'domains') return drawDomains($, e)
   if (view.mode === 'health') return drawHealth($, e, options)
+  if (view.mode === 'held') return drawHeld($, e)
   return drawList($, e, options)
 }
 
@@ -1306,6 +1317,7 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
   const rules = await read($, rulesAtom)
   const rulesOn = rules.entries.filter(entry => entry.enabled && entry.errors.length === 0 && !entry.isUntrusted).length
   const problems = (await read($, healthAtom)).findings.filter(finding => finding.level === 'fail' || finding.level === 'warn').length
+  const held = await read($, heldAtom)
   // nothing captured yet: the one-press ways in, from what is on this Mac
   // no Node to run the proxy on: install it, or download it without Homebrew
   let nodeOffer: RenderElement | null = null
@@ -1450,6 +1462,15 @@ async function drawList($: EngineInterface, e: PaneEvent, options: Options): Pro
           label={problems ? `Health (${problems})` : 'Health'}
           onPress={() => void openHealth($, options)}
         />
+        {held.length ? (
+          <Button
+            key="held"
+            hotkey="w"
+            variant="primary"
+            label={`⏸ ${held.length} held`}
+            onPress={() => void update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'held' }))}
+          />
+        ) : null}
         <Button key="clear" hotkey="x" label="Clear" onPress={() => void clearFlows($)} />
         <Button
           key="setup"
@@ -2574,6 +2595,62 @@ async function drawHealth($: EngineInterface, e: PaneEvent, options: Options): P
   )
 }
 
+// --- breakpoints: what is held, and letting it go -----------------------------------------
+
+type ResumeAnswer = ControlAnswer & { held?: number[] }
+
+/** Lets a held exchange go: as it was, changed, answered by hand, or cut. */
+async function resumeHeld($: EngineInterface, id: number, body: Record<string, unknown>): Promise<ResumeAnswer> {
+  return (await control($, 'held/resume', { id, ...body })) as ResumeAnswer
+}
+
+async function drawHeld($: EngineInterface, e: PaneEvent): Promise<RenderElement> {
+  const { Box, Text, Button, Code } = $.ui.resolve(e)
+  const held = await read($, heldAtom)
+  const notice = await read($, noticeAtom)
+  const width = Math.max(40, (e.props.bodyColumns ?? 100) - 4)
+  const act = async (id: number, body: Record<string, unknown>, words: string) => {
+    const answer = await resumeHeld($, id, body)
+    await say($, answer.error ? `Not let go: ${answer.error}.` : words)
+  }
+  return (
+    <Box flexDirection="column">
+      <Box flexDirection="row" gap={1}>
+        <Button key="back" hotkey="b" label="← List" onPress={() => void update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'list' }))} />
+      </Box>
+      <Text bold>Held at a breakpoint · {held.length}</Text>
+      <Text dimColor>Each waits until you let it go (or its rule's time runs out). Claude changes one with resume_request.</Text>
+      {notice ? <Text color="success">{notice}</Text> : null}
+      {held.length === 0 ? <Text dimColor>Nothing is held. A rule with a breakpoint step holds what it matches.</Text> : null}
+      {held.map(entry => (
+        <Box key={`held-${entry.id}`} flexDirection="column" marginTop={1}>
+          <Text bold>
+            #{entry.id} {entry.phase === 'request' ? `${entry.view.method} ${entry.view.url}` : `${entry.view.status} for ${entry.view.method} ${entry.view.url}`}
+          </Text>
+          <Text dimColor>
+            held {entry.phase === 'request' ? 'before it is sent' : 'before the client gets it'} · {entry.view.headers.length} headers
+          </Text>
+          {entry.view.body ? <Code source={truncate(entry.view.body, 2000)} language={/^\s*[[{]/.test(entry.view.body) ? 'json' : undefined} wrap="wrap" /> : null}
+          <Box flexDirection="row" gap={1} flexWrap="wrap">
+            <Button key={`held-go:${entry.id}`} variant="primary" label="Let it go" onPress={() => void act(entry.id, { action: 'continue' }, `#${entry.id} goes on as it was.`)} />
+            <Button key={`held-cut:${entry.id}`} label="Cut it" onPress={() => void act(entry.id, { action: 'abort' }, `#${entry.id} is cut.`)} />
+            <Button
+              key={`held-ask:${entry.id}`}
+              label="Ask Claude to change it"
+              onPress={() =>
+                void $.prompt.fill({
+                  text: `Request #${entry.id} (${entry.view.method} ${truncate(entry.view.url, width)}) is held at the ${entry.phase} breakpoint. Change it with resume_request: `,
+                  mode: 'insert',
+                })
+              }
+            />
+          </Box>
+        </Box>
+      ))}
+    </Box>
+  )
+}
+
 async function openHealth($: EngineInterface, options: Options): Promise<void> {
   await update($, viewAtom, (v): ProxyView => ({ ...v, mode: 'health' }))
   await runDoctor($, options)
@@ -2587,11 +2664,11 @@ const GET_TOOL = 'mcp__wirepane__get_request'
 const FILTER_HELP =
   'space-separated terms that must all hold, a leading "-" negates one: free text (substring of the URL), ' +
   'method:POST (or method:get,post), status:4xx | status:404 | status:>=400 | status:400-499, host:api.example.com | host:*.example.com, ' +
-  'path:/v1/login, type:json|html|xml|js|css|img|font|media|text|form|grpc|ws|tunnel|other, is:error|ok|pending|tunnel|ws|https|h2|grpc|rejected|modified, client:192.168.'
+  'path:/v1/login, type:json|html|xml|js|css|img|font|media|text|form|grpc|ws|tunnel|other, is:error|ok|pending|tunnel|ws|https|h2|grpc|held|rejected|modified, client:192.168.'
 
 const ACTION_TYPES = [
   'delay', 'throttle', 'setHeader', 'removeHeader', 'setQuery', 'removeQuery', 'mapRemote', 'replaceUrl',
-  'setBody', 'replaceBody', 'mergeJson', 'respond', 'setStatus', 'fail', 'script',
+  'setBody', 'replaceBody', 'mergeJson', 'respond', 'setStatus', 'fail', 'script', 'breakpoint',
 ]
 
 const ACTION_SCHEMA = {
@@ -2601,7 +2678,9 @@ const ACTION_SCHEMA = {
     'setQuery {name, value} (request) · removeQuery {name} (request) · mapRemote {scheme?, host?, port?, path?} (request: send elsewhere) · ' +
     'replaceUrl {pattern, with} (request) · setBody {text | json | file} · replaceBody {pattern, with} · mergeJson {json} (deep-merges into a JSON body) · ' +
     'respond {status, headers?, text | json | file} (request: answer without asking the server) · setStatus {status} (response) · ' +
-    'fail {kind: reset | close | timeout} · script {code}. A replace pattern is re:<regex source> (every match, $1 works in with) or literal text. ' +
+    'fail {kind: reset | close | timeout} · script {code} · breakpoint {timeoutMs?} (holds the request or the response until the person, ' +
+    'or Claude with resume_request, lets it go, changed or not; after timeoutMs, default 300000, it goes on as it was). ' +
+    'A replace pattern is re:<regex source> (every match, $1 works in with) or literal text. ' +
     'file is relative to the project root. script code is the body of async (req, res, ctx) => {}: in request it may change req.method, ' +
     'req.url, req.headers (lower-case names), req.body, or set req.respond = {status, headers, body}; in response it may change res.status, ' +
     'res.headers, res.body; req.json() and res.json() parse the bodies; a body may be set to an object. Prefer the other types to scripts.',
@@ -2765,6 +2844,17 @@ async function describeRequest($: EngineInterface, id: number, view: RequestView
     return out.join('\n')
   }
   if (detail.ruleLog?.length) out.push(`rules: ${detail.ruleLog.join(' · ')}`)
+  const held = (await read($, heldAtom)).find(h => h.id === id)
+  if (held) {
+    out.push(
+      '',
+      `--- HELD at the ${held.phase} breakpoint since ${new Date(held.since).toISOString()}: resume_request({ id: ${id} }) lets it go, with changes or not ---`,
+      held.phase === 'request' ? `${held.view.method} ${held.view.url}` : `status ${held.view.status}`,
+      ...held.view.headers.map(([k, v]) => `${k}: ${clipValue(v, 300)}`),
+      '',
+      held.view.body === null ? '(no body)' : bodyForModel(held.view.body, null, Math.min(view.budget, 8000)).text,
+    )
+  }
   if (view.part === 'summary') {
     out.push(`parts: get_request({ id: ${id}, part: 'headers' | 'request' | 'response'${detail.ws || detail.sse ? " | 'messages'" : ''} | 'all' })`)
     return out.join('\n')
@@ -3064,6 +3154,33 @@ export const register: Register = (on, raw) => {
       },
     })
     await $.tool.register({
+      name: 'resume_request',
+      description:
+        'Let go of an exchange held at a breakpoint (a rule step {type: breakpoint} in request or response; list_requests shows it as HELD, get_request shows what is held). ' +
+        'action continue (default) with optional changes: method, url, headers (null removes one), body or json (request phase); status, headers, body or json (response phase). ' +
+        'action respond answers a held request without the server: respond {status, headers?, text | json}. action abort cuts the connection.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'number' },
+          action: { type: 'string', enum: ['continue', 'respond', 'abort'] },
+          changes: {
+            type: 'object',
+            properties: {
+              method: { type: 'string' },
+              url: { type: 'string' },
+              status: { type: 'number' },
+              headers: { type: 'object', additionalProperties: { type: ['string', 'null'] } },
+              body: { type: 'string' },
+              json: {},
+            },
+          },
+          respond: { type: 'object', properties: { status: { type: 'number' }, headers: { type: 'object' }, text: { type: 'string' }, json: {} } },
+        },
+        required: ['id'],
+      },
+    })
+    await $.tool.register({
       name: 'send_ws_message',
       description:
         'Send a message into a live WebSocket the proxy records (its id from list_requests, kind ws, still open): to the client (as if the server said it) ' +
@@ -3336,6 +3453,15 @@ export const register: Register = (on, raw) => {
     const failure = await removeRule($, id)
     return { result: failure ? `Not removed: ${failure}` : `Removed ${id}.\n\n${await rulesText($)}` }
   }).catch(() => ({ deny: 'proxy: could not write the rules file; try again.' }))
+
+  on('tool.call', { tool: 'mcp__wirepane__resume_request' }, async ($, e) => {
+    const id = Number(e.id)
+    const action = e.action === 'respond' || e.action === 'abort' ? e.action : 'continue'
+    const answer = await resumeHeld($, id, { action, changes: e.changes, respond: e.respond })
+    if (answer.error) return { result: `Not let go: ${answer.error}.${answer.held ? ` Held now: ${answer.held.length ? answer.held.map(h => `#${h}`).join(', ') : 'nothing'}.` : ''}` }
+    const said = action === 'abort' ? 'cut' : action === 'respond' ? 'answered by hand' : e.changes ? 'let go with your changes' : 'let go as it was'
+    return { result: `#${id} ${said}. wait_for_request({ filter: 'is:ok', since: ${id - 1} }) or get_request({ id: ${id} }) shows how it ended.` }
+  }).catch(() => ({ deny: 'proxy: could not reach the proxy; try again.' }))
 
   on('tool.call', { tool: 'mcp__wirepane__send_ws_message' }, async ($, e) => {
     const body: Record<string, unknown> = { id: Number(e.id), to: e.to }

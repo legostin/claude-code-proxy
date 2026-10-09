@@ -1,7 +1,10 @@
 // An upstream proxy between Wirepane and the servers (an office's, a VPN's):
-//   http://[user:pass@]host:port     HTTP CONNECT, plain HTTP in absolute form
+//   http://[user:pass@]host:port     HTTP CONNECT, plain HTTP in absolute form; Basic or NTLM sign-in
+//                                    (DOMAIN\user as DOMAIN%5Cuser), whichever the proxy asks for
 //   socks5://[user:pass@]host:port   SOCKS5 (RFC 1928, credentials RFC 1929), names resolved by the proxy
-//   pac+http(s)://host/proxy.pac     a PAC file's FindProxyForURL chooses, per URL: PROXY, SOCKS, DIRECT
+//   pac+http(s)://[user:pass@]host/proxy.pac
+//                                    a PAC file's FindProxyForURL chooses, per URL: PROXY, SOCKS, DIRECT;
+//                                    the credentials go to the proxies it names, never to the PAC's server
 // This Mac's own addresses and the hosts named in the bypass list are reached
 // directly: no upstream proxy can reach this Mac's localhost.
 
@@ -12,6 +15,8 @@ import net from 'node:net'
 import os from 'node:os'
 import tls from 'node:tls'
 import vm from 'node:vm'
+
+import { authenticateMessage, challengeIn, negotiateMessage, ntlmScheme } from './ntlm.mjs'
 
 const ALWAYS_DIRECT = ['localhost', '*.localhost', '*.local']
 
@@ -28,9 +33,13 @@ function basic(url) {
   return url.username ? `Basic ${Buffer.from(`${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`).toString('base64')}` : null
 }
 
-/** A proxy from its URL: { kind: 'http' | 'socks', host, port, auth, user, password }. */
-function proxyOf(text) {
+/** A proxy from its URL: { kind: 'http' | 'socks', host, port, auth, user, password }; `credentials` (a URL's) when it has none. */
+function proxyOf(text, credentials = null) {
   const url = new URL(/^[a-z0-9+]+:\/\//i.test(text) ? text : `http://${text}`)
+  if (credentials?.username && !url.username) {
+    url.username = credentials.username
+    url.password = credentials.password
+  }
   const kind = /^socks/i.test(url.protocol) ? 'socks' : 'http'
   return {
     kind,
@@ -88,23 +97,131 @@ function opened(socket) {
   })
 }
 
-/** A tunnel to host:port through an HTTP proxy's CONNECT. */
+/** A proxy's answer head: { status, offers (its Proxy-Authenticate values), length, isChunked, isClosing }. */
+async function readHead(socket) {
+  const head = await readAnswer(socket, buffer => {
+    const end = buffer.indexOf('\r\n\r\n')
+    return end < 0 ? null : end + 4
+  })
+  const [first, ...lines] = head.toString('latin1').split('\r\n')
+  const values = name =>
+    lines.filter(line => line.toLowerCase().startsWith(`${name}:`)).map(line => line.slice(name.length + 1).trim())
+  const status = Number(/^HTTP\/1\.[01] (\d{3})/.exec(first)?.[1] ?? 0)
+  return {
+    status,
+    offers: values('proxy-authenticate'),
+    length: Number(values('content-length')[0] ?? 0),
+    isChunked: values('transfer-encoding').some(v => /chunked/i.test(v)),
+    isClosing: [...values('connection'), ...values('proxy-connection')].some(v => /close/i.test(v)) || /^HTTP\/1\.0/.test(first),
+  }
+}
+
+/** Reads past the body of an answer whose head was `head`, so the connection can carry the next request. */
+async function skipBody(socket, head) {
+  if (head.isChunked) await readAnswer(socket, buffer => (buffer.indexOf('0\r\n\r\n') < 0 ? null : buffer.indexOf('0\r\n\r\n') + 5), 1 << 20)
+  else if (head.length > 0) await readAnswer(socket, buffer => (buffer.length >= head.length ? head.length : null), 1 << 20)
+}
+
+// the proxies that asked for NTLM before ('NTLM' or 'Negotiate'), or that took Basic ('Basic'), by name
+const signIns = new Map()
+
+function refusal(proxy, head, what) {
+  if (head.status !== 407) return `the upstream proxy ${proxy.name} answered ${head.status || 'what is not HTTP'} to ${what}`
+  const scheme = ntlmScheme(head.offers)
+  if (!proxy.user) {
+    return `the upstream proxy ${proxy.name} answered 407 to ${what}: it wants credentials (http://user:password@host:port${scheme ? ', or http://DOMAIN%5Cuser:password@host:port for its Windows sign-in' : ''})`
+  }
+  if (scheme === 'Negotiate') return kerberos(proxy)
+  return `the upstream proxy ${proxy.name} answered 407 to ${what}: it refused the credentials`
+}
+
+function kerberos(proxy) {
+  return `the upstream proxy ${proxy.name} wants Kerberos sign-in, which Wirepane cannot do: run a helper on this Mac that signs in for you (such as Px: pip install px-proxy) and set upstreamProxy to it`
+}
+
+/**
+ * Signs in to an HTTP proxy with NTLM on a fresh connection: `send(socket, authorization)` writes
+ * the request with the negotiate message, then with the answer to the proxy's challenge.
+ * Resolves { socket, scheme } once the answer is sent, or { socket: null, head } when the proxy
+ * did not challenge (it took the request as it was, or it signs in some other way).
+ */
+async function ntlmSignIn(proxy, scheme, send) {
+  const socket = net.connect(proxy.port, proxy.host)
+  try {
+    await opened(socket)
+    send(socket, `${scheme} ${negotiateMessage().toString('base64')}`)
+    const head = await readHead(socket)
+    const challenge = head.status === 407 ? challengeIn(head.offers, scheme) : null
+    if (!challenge) {
+      socket.destroy()
+      return { socket: null, head }
+    }
+    await skipBody(socket, head)
+    if (head.isClosing) throw upstreamError(`the upstream proxy ${proxy.name} closed the connection in the middle of its NTLM sign-in`)
+    send(socket, `${scheme} ${authenticateMessage({ user: proxy.user, password: proxy.password, challenge }).toString('base64')}`)
+    return { socket, scheme }
+  } catch (error) {
+    socket.destroy()
+    throw error
+  }
+}
+
+/** A tunnel to host:port through an HTTP proxy's CONNECT: Basic credentials first, NTLM when the proxy asks for it. */
 async function httpConnect(proxy, host, port) {
+  const target = authority(host, port)
+  const request = authorization =>
+    `CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n${authorization ? `Proxy-Authorization: ${authorization}\r\nProxy-Connection: keep-alive\r\n` : ''}\r\n`
+  const known = signIns.get(proxy.name)
+  if (proxy.user && (known === 'NTLM' || known === 'Negotiate')) return ntlmConnect(proxy, target, known, request)
+  const socket = net.connect(proxy.port, proxy.host)
+  try {
+    await opened(socket)
+    socket.write(request(proxy.auth))
+    const head = await readHead(socket)
+    if (head.status === 200) {
+      if (proxy.user) signIns.set(proxy.name, 'Basic')
+      return socket
+    }
+    const scheme = head.status === 407 && proxy.user ? ntlmScheme(head.offers) : null
+    if (!scheme) throw upstreamError(refusal(proxy, head, `CONNECT ${target}`))
+    socket.destroy()
+    return await ntlmConnect(proxy, target, scheme, request)
+  } catch (error) {
+    socket.destroy()
+    throw error
+  }
+}
+
+/**
+ * Learns how an HTTP proxy signs in, with a CONNECT closed as soon as it answers: no request
+ * reaches a server. 'NTLM' or 'Negotiate' when its 407 asks for that, 'Basic' otherwise.
+ */
+async function learnSignIn(proxy, host, port) {
   const socket = net.connect(proxy.port, proxy.host)
   try {
     await opened(socket)
     const target = authority(host, port)
-    socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n${proxy.auth ? `Proxy-Authorization: ${proxy.auth}\r\n` : ''}\r\n`)
-    const head = await readAnswer(socket, buffer => {
-      const end = buffer.indexOf('\r\n\r\n')
-      return end < 0 ? null : end + 4
-    })
-    const status = /^HTTP\/1\.[01] (\d{3})/.exec(head.toString('latin1'))?.[1]
-    if (status !== '200') {
-      throw upstreamError(
-        `the upstream proxy ${proxy.name} answered ${status ?? 'what is not HTTP'} to CONNECT ${target}${status === '407' ? ' (it wants credentials: http://user:password@host:port)' : ''}`,
-      )
-    }
+    socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\nProxy-Authorization: ${proxy.auth}\r\n\r\n`)
+    const head = await readHead(socket)
+    signIns.set(proxy.name, (head.status === 407 && ntlmScheme(head.offers)) || 'Basic')
+  } catch {
+    // unknown still: this request goes with Basic, the next asks again
+  } finally {
+    socket.destroy()
+  }
+}
+
+async function ntlmConnect(proxy, target, scheme, request) {
+  const signedIn = await ntlmSignIn(proxy, scheme, (socket, authorization) => socket.write(request(authorization)))
+  if (!signedIn.socket) {
+    if (signedIn.head.status === 200) throw upstreamError(`the upstream proxy ${proxy.name} opened a tunnel before it signed in`)
+    throw upstreamError(scheme === 'Negotiate' && signedIn.head.status === 407 ? kerberos(proxy) : refusal(proxy, signedIn.head, `CONNECT ${target}`))
+  }
+  const { socket } = signedIn
+  try {
+    const head = await readHead(socket)
+    if (head.status !== 200) throw upstreamError(refusal(proxy, head, `CONNECT ${target}`))
+    signIns.set(proxy.name, scheme)
     return socket
   } catch (error) {
     socket.destroy()
@@ -200,8 +317,8 @@ function pacFunction(text, names) {
   return (url, host) => String(vm.runInContext(`FindProxyForURL(${JSON.stringify(url)}, ${JSON.stringify(host)})`, context, { timeout: 1000 }))
 }
 
-/** "PROXY a:8080; SOCKS5 b:1080; DIRECT" as routes, in order. */
-export function parsePacResult(text) {
+/** "PROXY a:8080; SOCKS5 b:1080; DIRECT" as routes, in order; `credentials` ({ username, password }) for the proxies. */
+export function parsePacResult(text, credentials = null) {
   return String(text)
     .split(';')
     .map(part => part.trim())
@@ -210,8 +327,8 @@ export function parsePacResult(text) {
       const [word, where = ''] = part.split(/\s+/)
       const kind = word.toUpperCase()
       if (kind === 'DIRECT') return { kind: 'direct' }
-      if (kind === 'PROXY' || kind === 'HTTP' || kind === 'HTTPS') return { kind: 'proxy', proxy: proxyOf(`http://${where}`) }
-      if (kind.startsWith('SOCKS')) return { kind: 'proxy', proxy: proxyOf(`socks5://${where}`) }
+      if (kind === 'PROXY' || kind === 'HTTP' || kind === 'HTTPS') return { kind: 'proxy', proxy: proxyOf(`http://${where}`, credentials) }
+      if (kind.startsWith('SOCKS')) return { kind: 'proxy', proxy: proxyOf(`socks5://${where}`, credentials) }
       return null
     })
     .filter(Boolean)
@@ -243,7 +360,11 @@ export function createUpstream(setting, bypass = '') {
   const direct = [...ALWAYS_DIRECT, ...String(bypass).split(',').map(s => s.trim().toLowerCase()).filter(Boolean)]
   const isPac = /^pac\+/i.test(setting)
   const fixed = isPac ? null : proxyOf(setting)
-  const name = isPac ? setting : fixed.name
+  // a PAC URL's credentials are for the proxies it names; its server gets the URL without them
+  const pacUrl = isPac ? new URL(setting.replace(/^pac\+/i, '')) : null
+  const pacCredentials = pacUrl?.username ? { username: pacUrl.username, password: pacUrl.password } : null
+  if (pacUrl) pacUrl.username = pacUrl.password = ''
+  const name = isPac ? `pac+${pacUrl}` : fixed.name
 
   /** Whether `host` may go through the upstream (not this Mac, not bypassed); a PAC file may still say DIRECT. */
   const carries = host => {
@@ -258,7 +379,7 @@ export function createUpstream(setting, bypass = '') {
   const names = Object.assign(new Map(), { wanted: new Set() })
   const loadPac = async () => {
     if (pac && Date.now() - pacAt < 600_000) return pac
-    const text = await fetchText(setting.replace(/^pac\+/i, ''))
+    const text = await fetchText(String(pacUrl))
     pac = pacFunction(text, names)
     pacAt = Date.now()
     return pac
@@ -284,7 +405,7 @@ export function createUpstream(setting, bypass = '') {
       names.wanted.clear()
       answer = find(url, host)
     }
-    const parsed = parsePacResult(answer)
+    const parsed = parsePacResult(answer, pacCredentials)
     return parsed.length ? parsed : [{ kind: 'direct' }]
   }
 
@@ -346,19 +467,56 @@ export function createUpstream(setting, bypass = '') {
     return undefined
   }
 
-  /** Request options for plain HTTP: an HTTP proxy gets the absolute URL; SOCKS and DIRECT a pool of their own. */
-  const plainRequest = async (target, headers) => {
+  /**
+   * Request options for plain HTTP: an HTTP proxy gets the absolute URL (signed in with NTLM
+   * on a connection of its own when it asks for that); SOCKS and DIRECT a pool of their own.
+   */
+  const plainRequest = async (target, headers, method = 'GET') => {
     const [first] = await routes('http', target.host, target.port)
     if (first?.kind === 'proxy' && first.proxy.kind === 'http') {
-      return {
-        host: first.proxy.host,
-        port: first.proxy.port,
-        path: `http://${authority(target.host, target.port)}${target.path}`,
-        headers: first.proxy.auth ? [...headers, 'Proxy-Authorization', first.proxy.auth] : headers,
-        agent: false,
+      const proxy = first.proxy
+      const url = `http://${Number(target.port) === 80 ? authority(target.host, 80).replace(/:80$/, '') : authority(target.host, target.port)}${target.path}`
+      if (proxy.user && !signIns.has(proxy.name)) await learnSignIn(proxy, target.host, target.port)
+      const known = signIns.get(proxy.name)
+      if (proxy.user && (known === 'NTLM' || known === 'Negotiate')) {
+        const signedIn = await ntlmPlain(proxy, known, method, url)
+        if (signedIn) return { host: proxy.host, port: proxy.port, path: url, headers: [...headers, 'Proxy-Authorization', signedIn.authorization], createConnection: signedIn.connection }
       }
+      return { host: proxy.host, port: proxy.port, path: url, headers: proxy.auth ? [...headers, 'Proxy-Authorization', proxy.auth] : headers, agent: false }
     }
     return { host: target.host, port: target.port, path: target.path, headers, agent: plainPool }
+  }
+
+  /**
+   * NTLM for one plain request to a proxy that asked for it: the negotiate message goes with
+   * an empty request the proxy answers itself (407), and the real request carries the answer
+   * to its challenge on that connection. Null when the proxy turns out to take Basic.
+   */
+  const ntlmPlain = async (proxy, scheme, method, url) => {
+    let authorization = null
+    const host = new URL(url).host
+    const signedIn = await ntlmSignIn(proxy, scheme, (socket, value) => {
+      // the first message: an empty request; the second goes with the real one
+      if (authorization === null) socket.write(`${method} ${url} HTTP/1.1\r\nHost: ${host}\r\nProxy-Authorization: ${value}\r\nProxy-Connection: keep-alive\r\nContent-Length: 0\r\n\r\n`)
+      authorization = value
+    })
+    if (!signedIn.socket) {
+      const offered = signedIn.head.status === 407 ? ntlmScheme(signedIn.head.offers) : null
+      if (offered && offered !== scheme) return ntlmPlain(proxy, offered, method, url)
+      if (offered === 'Negotiate') throw upstreamError(kerberos(proxy))
+      signIns.set(proxy.name, 'Basic')
+      return null
+    }
+    signIns.set(proxy.name, signedIn.scheme)
+    const { socket } = signedIn
+    return {
+      authorization,
+      connection: () => {
+        // the HTTP client listens now; the socket was left paused after the challenge
+        process.nextTick(() => socket.resume())
+        return socket
+      },
+    }
   }
 
   return { name, carries, connect, connectTls, agent, plainRequest }

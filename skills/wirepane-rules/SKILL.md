@@ -100,6 +100,25 @@ Never answer, so the app's timeout shows: `{ "type": "fail", "kind": "timeout" }
 }
 ```
 
+## Breakpoints: hold it, look, change it, let it go
+
+```json
+{
+  "id": "pause-checkout",
+  "description": "Hold checkout before it is sent and its answer before the app gets it",
+  "match": { "methods": ["POST"], "path": "/v1/checkout" },
+  "request": [{ "type": "breakpoint" }],
+  "response": [{ "type": "breakpoint", "timeoutMs": 120000 }]
+}
+```
+
+- **What is held.** A matching request stops before it is sent (or its response before the client gets it). It shows as `HELD` in `list_requests`, and `get_request` shows what is held. The person sees it in the Held view (`⏸ 1 held` in the pane).
+- **Letting it go.** `resume_request({ id })` lets it go as it was.
+  - `changes: { method?, url?, headers?, body? | json? }` changes the request; `changes: { status?, headers?, body? | json? }` changes the response.
+  - `action: "respond"` with `respond: { status, text | json }` answers the request without the server.
+  - `action: "abort"` cuts it.
+- **Timing.** After `timeoutMs` (default 5 minutes) it goes on as it was. Tell the person to trigger the request, then use `wait_for_request({ filter: "is:held", until: "start" })` to catch it.
+
 ## GraphQL: one operation
 
 ```json

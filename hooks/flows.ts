@@ -1,7 +1,7 @@
 // Pure logic shared by the pane and the tools: the sidecar's line protocol,
 // the flow list, the filter language and the formats.
 
-import type { ProxyAddress, ProxyCa, ProxyFlow, ProxySession } from '../types'
+import type { ProxyAddress, ProxyCa, ProxyFlow, ProxyHeld, ProxySession } from '../types'
 
 export type SidecarEvent =
   | {
@@ -24,6 +24,8 @@ export type SidecarEvent =
   | { t: 'unpinned'; client: string | null; host: string }
   | { t: 'cleared' }
   | { t: 'tick' }
+  | ({ t: 'held' } & ProxyHeld)
+  | { t: 'released'; id: number }
   | { t: 'stopping' }
   | { t: 'flow'; flow: ProxyFlow }
   | { t: 'network'; lan: ProxyAddress[] }
@@ -272,6 +274,7 @@ const IS_TESTS: Record<string, (flow: ProxyFlow) => boolean> = {
   rejected: flow => flow.errorCode === 'client-rejected-cert',
   modified: flow => (flow.rules?.length ?? 0) > 0,
   h2: flow => flow.httpVersion === '2',
+  held: flow => flow.held !== undefined,
   grpc: flow => typeOf(flow) === 'grpc',
 }
 
@@ -362,6 +365,7 @@ export function formatDuration(ms: number | null): string {
 }
 
 export function statusLabel(flow: ProxyFlow): string {
+  if (flow.held) return 'HELD'
   if (flow.errorCode === 'client-rejected-cert') return 'CERT'
   if (flow.state === 'error' && flow.status === null) return 'ERR'
   if (flow.status === null) return '…'

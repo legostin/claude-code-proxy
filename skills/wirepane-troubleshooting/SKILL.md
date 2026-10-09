@@ -87,11 +87,15 @@ Someone else's app that pins stays encrypted. Leave it passed through, or "Never
 - **`ECONNREFUSED` to `localhost`:** the dev server is not running on that port.
   - An emulator reaches the Mac as `10.0.2.2`.
   - A phone's request for `localhost` is refused by design: the network may not reach the Mac's loopback. Use the Mac's address, or a rule.
-- **Office network, corporate proxy or Zscaler:** servers may be reachable only through the network's proxy. `diagnose` names the proxy the network service had before Wirepane, and **Use it upstream** sets the plugin's `upstreamProxy` option. It takes `http://[user:password@]host:port`, `socks5://[user:password@]host:port`, or a PAC file as `pac+http://wpad/proxy.pac`. Add `user:password@` if the proxy asks (a 407). `upstreamBypass` lists the hosts to reach directly. NTLM and Kerberos sign-in are not supported. If the network service has automatic proxy configuration (PAC) on, apps may follow it instead of Wirepane's system proxy: turn it off while debugging.
+- **Office network, corporate proxy or Zscaler:** servers may be reachable only through the network's proxy. `diagnose` names the proxy the network service had before Wirepane, and **Use it upstream** sets the plugin's `upstreamProxy` option. It takes `http://[user:password@]host:port`, `socks5://[user:password@]host:port`, or a PAC file as `pac+http://[user:password@]wpad/proxy.pac` (those credentials go to the proxies the PAC names). `upstreamBypass` lists the hosts to reach directly.
+  - **A 407 (the proxy wants to know who you are):** add `user:password@`. Wirepane signs in with Basic or Windows NTLM, whichever the proxy asks for; a Windows account goes as `DOMAIN%5Cuser` (`%5C` is the backslash). Ask the person for the password; never write it in the project.
+  - **"wants Kerberos sign-in":** the proxy takes only Kerberos tickets. Run a helper that signs in with the Mac's ticket, such as Px (`pip install px-proxy`, then `px`; it listens on `127.0.0.1:3128`), and set `upstreamProxy` to `http://127.0.0.1:3128`.
+  - **"refused the credentials":** a wrong password, a locked account, or a domain the proxy does not know: check `DOMAIN%5Cuser` with the person.
+  If the network service has automatic proxy configuration (PAC) on, apps may follow it instead of Wirepane's system proxy: turn it off while debugging.
 
 ## Protocols
 
-- **gRPC:** needs HTTP/2, which Wirepane speaks both ways over TLS. Plain-text h2c with prior knowledge is not supported; gRPC-Web is.
+- **gRPC:** needs HTTP/2, which Wirepane speaks both ways: over TLS, or in plain text (h2c with prior knowledge, as a gRPC client to a local service speaks it through `grpc_proxy` or `https_proxy`). When the server turns out to speak only HTTP/1.1, the request goes on as HTTP/1.1. gRPC-Web is decoded too.
 - **WebSockets:** Wirepane takes permessage-deflate out of the client's offer so messages stay readable. A server that insists on compression may refuse; a message that arrives compressed anyway passes on as it came.
 - **HTTP/2:** clients that offer h2 get it. When the server speaks only HTTP/1.1, Wirepane talks HTTP/1.1 to it.
 

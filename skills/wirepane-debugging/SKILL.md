@@ -28,8 +28,9 @@ Wirepane is an HTTPS proxy inside Claude Code. It records what a browser, an iOS
    - `search_requests({ text: "invalid_token" })` finds a value in URLs, headers, bodies, WebSocket messages and events.
    - `diff_requests({ a, b })` compares the request that works with the one that fails: query, headers, status, JSON fields.
 6. **Reproduce and test a fix in place.** Use `replay_request({ id, headers: { Authorization: "Bearer …" }, json: { … } })`. It really sends the request again. Ask before replaying anything that pays, posts, deletes or mails.
-7. **Change the traffic without touching the server.** Use `add_rule`: mock a response, delay, throttle, fail, rewrite a body, map to a local server, rewrite WebSocket messages, or play a WebSocket server. The `wirepane-rules` skill has the recipes.
-8. **Fix the code, then prove it.** Call `wait_for_request` again for the same request and check its status and body.
+7. **Hold one request and change it live.** A rule with a `breakpoint` step pauses it. `get_request` shows what is held; `resume_request` lets it go, changed, answered by hand or cut. Use it to see how the app copes with an edited answer before you write a mock.
+8. **Change the traffic without touching the server.** Use `add_rule`: mock a response, delay, throttle, fail, rewrite a body, map to a local server, rewrite WebSocket messages, or play a WebSocket server. The `wirepane-rules` skill has the recipes.
+9. **Fix the code, then prove it.** Call `wait_for_request` again for the same request and check its status and body.
 
 ## Protocols
 

@@ -29,7 +29,7 @@ jobs:
         run: node --test --test-force-exit sidecar/h2.spec.mjs sidecar/protobuf.spec.mjs
       - name: Run the WebSocket and server-sent events tests
         run: node --test --test-force-exit sidecar/websocket.spec.mjs sidecar/ws.spec.mjs sidecar/sse.spec.mjs
-      - name: Run the control, pinning, watchdog and shared proxy tests
-        run: node --test --test-force-exit sidecar/control.spec.mjs sidecar/pinning.spec.mjs sidecar/watchdog.spec.mjs sidecar/shared.spec.mjs sidecar/upstream.spec.mjs
+      - name: Run the control, breakpoint, pinning, watchdog, upstream (with NTLM) and shared proxy tests
+        run: node --test --test-force-exit sidecar/control.spec.mjs sidecar/breakpoints.spec.mjs sidecar/pinning.spec.mjs sidecar/watchdog.spec.mjs sidecar/shared.spec.mjs sidecar/upstream.spec.mjs sidecar/ntlm.spec.mjs
       - name: Check the skills (their rule recipes validate)
         run: node --test sidecar/skills.spec.mjs

@@ -96,6 +96,23 @@ describe('the doctor', () => {
     expect(found.find(f => f.title === 'Nothing answers at localhost:3000')!.detail).toContain('is the dev server running')
   })
 
+  test("the upstream proxy's sign-in failures are told once, whatever the host", () => {
+    const proxyError = (id: number, host: string, error: string) => flow(id, { host, status: null, state: 'error', errorCode: 'upstream', error })
+    const found = diagnose(
+      facts({
+        upstreamProxy: 'http://OFFICE%5Calice:pw@proxy.corp:8080',
+        flows: [
+          proxyError(1, 'a.example', 'EUPSTREAMPROXY: the upstream proxy http://proxy.corp:8080 answered 407 to CONNECT a.example:443: it refused the credentials'),
+          proxyError(2, 'b.example', 'EUPSTREAMPROXY: the upstream proxy http://proxy.corp:8080 answered 407 to CONNECT b.example:443: it refused the credentials'),
+          proxyError(3, 'c.example', 'EUPSTREAMPROXY: the upstream proxy http://proxy.corp:8080 wants Kerberos sign-in, which Wirepane cannot do: run a helper'),
+        ],
+      }),
+    )
+    expect(found.filter(f => f.title === 'The upstream proxy refused the credentials')).toHaveLength(1)
+    expect(found.find(f => f.title.startsWith('The upstream proxy takes only Kerberos'))!.fix).toContain('Px')
+    expect(found.find(f => f.title.startsWith('Servers are reached through'))!.title).toBe('Servers are reached through the upstream proxy http://…@proxy.corp:8080')
+  })
+
   test('tracked domains that match nothing say what passed instead', () => {
     const off = facts({ flows: [], tracking: { enabled: true, patterns: ['app.example.com'] }, skipped: { 'api.example.org': 12, 'gateway.icloud.com': 3 } })
     expect(findingsText(diagnose(off))).toContain('api.example.org ×12, gateway.icloud.com ×3')

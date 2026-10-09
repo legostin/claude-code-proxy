@@ -1,8 +1,8 @@
 {
   "name": "wirepane",
   "displayName": "Wirepane",
-  "version": "0.8.0",
-  "description": "The debugging proxy Claude can read, inside Claude Code on macOS: HTTPS, HTTP/2, gRPC, WebSockets and server-sent events from the browser, iOS and Android; one-press device setup; rules and mock servers; a doctor that fixes what is in the way; 15 tools and 3 skills for Claude.",
+  "version": "0.9.0",
+  "description": "The debugging proxy Claude can read, inside Claude Code on macOS: HTTPS, HTTP/2, gRPC, WebSockets and server-sent events from the browser, iOS and Android; one-press device setup; rules and mock servers; a doctor that fixes what is in the way; 16 tools and 3 skills for Claude.",
   "author": {
     "name": "Legostin Vyacheslav",
     "url": "https://github.com/legostin"
@@ -71,7 +71,7 @@
     "upstreamProxy": {
       "type": "string",
       "title": "Upstream proxy",
-      "description": "An office's or a VPN's proxy every connection to a server goes through: http://[user:password@]host:port, socks5://[user:password@]host:port, or a PAC file as pac+http://host/proxy.pac. Empty: servers are reached directly.",
+      "description": "An office's or a VPN's proxy every connection to a server goes through: http://[user:password@]host:port (Basic or Windows NTLM sign-in; DOMAIN\\user as DOMAIN%5Cuser), socks5://[user:password@]host:port, or a PAC file as pac+http://[user:password@]host/proxy.pac (the credentials go to the proxies it names). Empty: servers are reached directly.",
       "default": ""
     },
     "upstreamBypass": {

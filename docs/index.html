@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Wirepane: the debugging proxy Claude can read</title>
-<meta name="description" content="A Claude Code mod that decrypts HTTPS, HTTP/2, gRPC, WebSockets and server-sent events from your browser, iOS Simulator, iPhone and Android, and gives Claude 15 tools to search, wait for, replay, diff and change the traffic, with a doctor that fixes what is in the way. A Proxyman, Charles, mitmproxy and HTTP Toolkit alternative inside Claude Code.">
+<meta name="description" content="A Claude Code mod that decrypts HTTPS, HTTP/2, gRPC, WebSockets and server-sent events from your browser, iOS Simulator, iPhone and Android, and gives Claude 16 tools to search, wait for, replay, diff and change the traffic, with a doctor that fixes what is in the way. A Proxyman, Charles, mitmproxy and HTTP Toolkit alternative inside Claude Code.">
 <meta name="keywords" content="Claude Code, Claude Code plugin, Claude Code mod, HTTPS proxy, MITM proxy, debugging proxy, HTTP/2 proxy, gRPC debugging, WebSocket debugging, server-sent events, mock server, Proxyman alternative, Charles Proxy alternative, mitmproxy alternative, HTTP Toolkit alternative, iOS Simulator proxy, Android emulator proxy, certificate pinning, AI coding agent">
 <meta name="author" content="Legostin Vyacheslav">
 <link rel="canonical" href="https://legostin.github.io/wirepane/">
@@ -19,7 +19,7 @@
 <meta property="og:image:alt" content="Wirepane for Claude Code: a request list with 401, gRPC and WebSocket rows and a filter">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Wirepane: the debugging proxy Claude can read">
-<meta name="twitter:description" content="HTTPS, HTTP/2, gRPC, WebSockets and SSE from your browser, iOS and Android, inside Claude Code, with 15 tools for Claude.">
+<meta name="twitter:description" content="HTTPS, HTTP/2, gRPC, WebSockets and SSE from your browser, iOS and Android, inside Claude Code, with 16 tools for Claude.">
 <meta name="twitter:image" content="https://legostin.github.io/wirepane/og.png">
 <meta name="theme-color" content="#0f1115">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='7' fill='%23d97757'/%3E%3Cpath d='M8 12h12l-3-3M24 20H12l3 3' stroke='%23fff' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
@@ -29,7 +29,7 @@
   "@type": "SoftwareSourceCode",
   "name": "Wirepane",
   "alternateName": "claude-code-proxy",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "A Claude Code mod that decrypts HTTPS, HTTP/2, gRPC, WebSocket and server-sent events traffic from a browser, the iOS Simulator, an iPhone, the Android emulator or an Android phone, shows it in a filterable pane, changes it with rules and mock servers, and gives Claude tools to search, wait for, replay, compare and export requests, with a doctor that diagnoses and fixes setup problems.",
   "url": "https://legostin.github.io/wirepane/",
   "codeRepository": "https://github.com/legostin/wirepane",
@@ -49,7 +49,7 @@
     {
       "@type": "Question",
       "name": "Is it a replacement for Proxyman, Charles, mitmproxy or HTTP Toolkit?",
-      "acceptedAnswer": { "@type": "Answer", "text": "For finding out what an app sent, what came back and why it fails, yes, without leaving Claude Code: HTTP/2, gRPC, WebSockets and SSE, with rules, mocks, replays and diffs. It has no interactive breakpoints and no HTTP/3; it works behind an office proxy. It is built around the agent: the doctor, the waiting, search and diff tools, the context budget, and skills that fix the app's own code." }
+      "acceptedAnswer": { "@type": "Answer", "text": "For finding out what an app sent, what came back and why it fails, yes, without leaving Claude Code: HTTP/2, gRPC, WebSockets and SSE, with rules, mocks, replays and diffs. It has breakpoints and works behind an office proxy; HTTP/3 never meets an HTTP proxy. It is built around the agent: the doctor, the waiting, search and diff tools, the context budget, and skills that fix the app's own code." }
     },
     {
       "@type": "Question",
@@ -144,7 +144,7 @@
   <header>
     <div class="tag">Claude Code mod · open source · MIT · macOS</div>
     <h1>The debugging proxy Claude can read</h1>
-    <p class="lead"><strong>Wirepane</strong> turns Claude Code into an HTTPS debugging proxy for the browser, the iOS Simulator, iPhones, the Android emulator and Android phones. It decrypts <strong>HTTP/2, gRPC, WebSockets and server-sent events</strong>, shows them next to your conversation, and gives Claude the same traffic through 15 tools.</p>
+    <p class="lead"><strong>Wirepane</strong> turns Claude Code into an HTTPS debugging proxy for the browser, the iOS Simulator, iPhones, the Android emulator and Android phones. It decrypts <strong>HTTP/2, gRPC, WebSockets and server-sent events</strong>, shows them next to your conversation, and gives Claude the same traffic through 16 tools.</p>
     <div class="actions">
       <a class="btn primary" href="https://github.com/legostin/wirepane">View on GitHub</a>
       <a class="btn" href="#install">Install</a>
@@ -174,7 +174,7 @@
 
   <h2>Every protocol a modern app speaks</h2>
   <div class="grid">
-    <div class="card"><h3>HTTP/2 both ways</h3><p>Clients that offer h2 get it. Servers that speak it get it. Everything else gets HTTP/1.1, each side on its own.</p></div>
+    <div class="card"><h3>HTTP/2 both ways</h3><p>Clients that offer h2 get it. Servers that speak it get it. Everything else gets HTTP/1.1, each side on its own. Plain-text h2c too, for gRPC to a local service.</p></div>
     <div class="card"><h3>gRPC and protobuf</h3><p>gRPC and gRPC-Web, trailers forwarded. Messages are decoded without a schema, by field number. A failed call says why: <code>gRPC NOT_FOUND</code>.</p></div>
     <div class="card"><h3>WebSockets, message by message</h3><p>Both ways, with timing and close codes, compression taken out of the offer so every message stays readable.</p></div>
     <div class="card"><h3>Server-sent events, as they arrive</h3><p>Event by event, with the millisecond each one came. LLM streaming APIs, debugged.</p></div>
@@ -194,7 +194,7 @@
   </div>
 
   <h2 id="tools">Tools for Claude</h2>
-  <p>Fifteen tools, built so Claude reads what it needs and nothing more. Long URLs are cut, requests are read part by part under one budget, and <code>json_path</code> picks one field from a megabyte of JSON.</p>
+  <p>Sixteen tools, built so Claude reads what it needs and nothing more. Long URLs are cut, requests are read part by part under one budget, and <code>json_path</code> picks one field from a megabyte of JSON.</p>
   <div class="table-wrap">
   <table>
     <tr><th>Tool</th><th>What it does</th></tr>
@@ -204,6 +204,7 @@
     <tr><td><code>search_requests</code></td><td>Finds a value in URLs, headers, bodies, messages and events: which request returned <code>invalid_token</code>?</td></tr>
     <tr><td><code>diff_requests</code></td><td>The request that works against the one that fails: query, headers, status, JSON field by field.</td></tr>
     <tr><td><code>replay_request</code></td><td>Sends a request again, as it was or changed, recorded and under the rules.</td></tr>
+    <tr><td><code>resume_request</code></td><td>Lets go of an exchange held at a breakpoint: as it was, changed, answered by hand, or cut.</td></tr>
     <tr><td><code>send_ws_message</code>, <code>close_websocket</code></td><td>Injects a message into a live WebSocket, either way, or closes it to test reconnects.</td></tr>
     <tr><td><code>add_rule</code>, <code>update_rule</code>, <code>remove_rule</code>, <code>list_rules</code></td><td>The rules file, applied at once.</td></tr>
     <tr><td><code>track_domains</code></td><td>Records only your app's hosts; shows what passed through.</td></tr>
@@ -233,7 +234,7 @@
   </ul>
   <p>Each finding has its fix, and a button when Wirepane can do it.</p>
   <div class="pane health" role="img" aria-label="The Health view with findings">
-    <div class="dim">Proxy process: pid 81234, Wirepane 0.8.0, up 2 h 14 min, 61.2MB of memory, 1342 requests kept; shared: this session and 1 other (shop-web).</div>
+    <div class="dim">Proxy process: pid 81234, Wirepane 0.9.0, up 2 h 14 min, 61.2MB of memory, 1342 requests kept; shared: this session and 1 other (shop-web).</div>
     <div class="f"><span class="m fail">✗</span><span>Wi-Fi points at Wirepane, but no proxy runs: Mac apps and the iOS Simulator have no internet <span class="btn-inline">Put back</span></span></div>
     <div class="f"><span class="m warn">!</span><span>the device at 192.168.1.20 refuses the Wirepane CA for every host <span class="btn-inline">Setup</span><br><span class="fix">iPhone: install the profile, then Certificate Trust Settings → turn on Wirepane CA.</span></span></div>
     <div class="f"><span class="m warn">!</span><span>api.payments.example refuses the Wirepane CA while other hosts work: the app pins its certificate <span class="btn-inline">Never decrypt it</span></span></div>
@@ -251,6 +252,7 @@
   <h2 id="rules">Rules and mock servers</h2>
   <p>Ask in plain words and Claude writes the rule into the project's <code>.claude/proxy-rules.json</code>. The proxy applies it at once. You can do:</p>
   <ul>
+    <li>breakpoints: a request or a response held until you or Claude let it go, changed or not;</li>
     <li>mocks, delays, throttling, errors and dropped connections;</li>
     <li>rewritten headers, URLs and JSON;</li>
     <li>sending requests to your local server;</li>
@@ -273,7 +275,7 @@
   <p>Then run <code>/proxy</code>. No account, no telemetry, no npm dependencies. The CA is made on your machine, and recordings stay in <code>~/.claude/proxy-mod</code>.</p>
 
   <h2>FAQ</h2>
-  <details><summary>Is it a replacement for Proxyman, Charles, mitmproxy or HTTP Toolkit?</summary><p>For finding out what an app sent, what came back and why it fails, yes, without leaving Claude Code: HTTP/2, gRPC, WebSockets and SSE, with rules, mocks, replays and diffs. It has no interactive breakpoints and no HTTP/3; it works behind an office proxy. It is built around the agent: the doctor, the waiting, search and diff tools, the context budget, and skills that fix the app's own code.</p></details>
+  <details><summary>Is it a replacement for Proxyman, Charles, mitmproxy or HTTP Toolkit?</summary><p>For finding out what an app sent, what came back and why it fails, yes, without leaving Claude Code: HTTP/2, gRPC, WebSockets and SSE, with rules, mocks, replays and diffs. It has breakpoints and works behind an office proxy; HTTP/3 never meets an HTTP proxy. It is built around the agent: the doctor, the waiting, search and diff tools, the context budget, and skills that fix the app's own code.</p></details>
   <details><summary>Do I have to install the certificate on my Mac?</summary><p>Not for the separate browser, which trusts the proxy by SPKI hash. Safari, native Mac apps and the iOS Simulator need the CA, one press each.</p></details>
   <details><summary>Why do some requests show CERT?</summary><p>The client refused the proxy's certificate: it does not trust the CA yet, or the app pins its certificates. The diagnose tool tells which, and a pinned host passes through after two refusals so the app keeps working.</p></details>
   <details><summary>I see nothing from my Flutter, Go or Unity app.</summary><p>Some runtimes ignore the system proxy. The troubleshooting skill gives Claude the few lines that fix it in a debug build, such as Flutter's HttpOverrides.</p></details>
@@ -282,16 +284,14 @@
   <h2>Limits</h2>
   <ul class="limits">
     <li><strong>HTTP/3 (QUIC):</strong> it never meets an HTTP proxy. An app that forces it is not seen.</li>
-    <li><strong>h2c:</strong> plain-text HTTP/2 with prior knowledge is not supported.</li>
-    <li><strong>Breakpoints:</strong> there are none for pausing a request by hand. Rules, replays and scripts cover most of it.</li>
     <li><strong>Protobuf:</strong> decoded without a schema, so it shows field numbers, not names.</li>
-    <li><strong>Upstream proxy:</strong> HTTP (Basic credentials), SOCKS5 and PAC files work; NTLM and Kerberos sign-in do not.</li>
+    <li><strong>Kerberos:</strong> an upstream proxy that takes only Kerberos tickets needs a helper that signs in for you, such as Px. Basic and NTLM sign in by themselves.</li>
     <li><strong>Android system CA:</strong> it needs a Google APIs emulator image and lasts until a reboot. Android 17 asks for Certificate Transparency on system CAs.</li>
     <li><strong>Platform:</strong> macOS only. Mods are an early-access Claude Code API.</li>
   </ul>
 
   <footer>
-    Wirepane 0.8.0 is MIT licensed · <a href="https://github.com/legostin/wirepane">source</a> · <a href="https://github.com/legostin/wirepane/blob/main/docs/design.md">design notes</a> · not affiliated with Anthropic, Proxyman, Charles, mitmproxy or HTTP Toolkit
+    Wirepane 0.9.0 is MIT licensed · <a href="https://github.com/legostin/wirepane">source</a> · <a href="https://github.com/legostin/wirepane/blob/main/docs/design.md">design notes</a> · not affiliated with Anthropic, Proxyman, Charles, mitmproxy or HTTP Toolkit
   </footer>
 </main>
 </body>

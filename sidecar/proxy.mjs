@@ -37,9 +37,11 @@ import {
   finalizeRequestRules,
   getHeader,
   holdsMessages,
+  hostHeader,
   rulesForRequest,
   rulesForResponse,
   setHeader,
+  setUrl,
   throttleStream,
   urlOf,
 } from './engine.mjs'
@@ -590,7 +592,7 @@ function passThrough(req, res, target, isCounted = true) {
   const headers = forwardable(requestPairs(req).flat())
   const direct = { host: target.host, port: target.port, path: target.path, headers, agent: agentFor(target.scheme, target.host, isLocal), ...reachFor(client) }
   if (!isHttps && upstreamProxy?.carries(target.host)) {
-    return void upstreamProxy.plainRequest(target, headers).then(
+    return void upstreamProxy.plainRequest(target, headers, req.method).then(
       where => relayPassThrough(req, res, target, where),
       () => {
         res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' })
@@ -730,6 +732,32 @@ function agentFor(scheme, host, isLocal) {
 const h2Refused = new Set()
 const h2Sessions = new Map()
 
+// the TLS connection the probe opened to a server that chose HTTP/1.1: the request that asked
+// takes it, rather than open another (through an office proxy, a tunnel costs round trips)
+const spareSockets = new Map()
+
+function keepSpare(key, socket) {
+  spareSockets.get(key)?.destroy()
+  spareSockets.set(key, socket)
+  const drop = () => {
+    if (spareSockets.get(key) !== socket) return
+    spareSockets.delete(key)
+    socket.destroy()
+  }
+  socket.once('close', drop)
+  setTimeout(drop, 5000).unref()
+}
+
+function takeSpare(key) {
+  const socket = spareSockets.get(key)
+  spareSockets.delete(key)
+  return socket && !socket.destroyed ? socket : null
+}
+
+function sessionKey(target, client) {
+  return `${target.host}:${target.port}|${isLocalClient(client) ? 'local' : 'remote'}`
+}
+
 function authorityOf(target) {
   const host = net.isIPv6(target.host) ? `[${target.host}]` : target.host
   const isDefault = (target.scheme === 'https' && target.port === 443) || (target.scheme === 'http' && target.port === 80)
@@ -739,10 +767,11 @@ function authorityOf(target) {
 /** An open HTTP/2 session to the target's origin, or null when the server does not speak h2. */
 async function h2SessionFor(target, client) {
   const origin = `${target.host}:${target.port}`
-  const key = `${origin}|${isLocalClient(client) ? 'local' : 'remote'}`
+  const key = sessionKey(target, client)
   const cached = await (h2Sessions.get(key) ?? Promise.resolve(null)).catch(() => null)
   if (cached && !cached.closed && !cached.destroyed) return cached
   if (h2Refused.has(origin)) return null
+  if (target.scheme === 'http') return h2cSession(target, client, key, origin)
   const tlsOptions = {
     servername: net.isIP(target.host) ? undefined : target.host,
     rejectUnauthorized: checksCertificate(target.host),
@@ -762,7 +791,7 @@ async function h2SessionFor(target, client) {
     secured.then(socket => {
       if (socket.alpnProtocol !== 'h2') {
         h2Refused.add(origin)
-        socket.destroy()
+        keepSpare(key, socket)
         return resolve(null)
       }
       const session = http2.connect(`https://${authorityOf(target)}`, { createConnection: () => socket })
@@ -775,6 +804,55 @@ async function h2SessionFor(target, client) {
       // an idle session goes; the next request opens another
       session.setTimeout(60_000, () => session.close())
       resolve(session)
+    }, reject)
+  })
+  h2Sessions.set(key, opening)
+  opening.then(
+    session => session === null && h2Sessions.get(key) === opening && h2Sessions.delete(key),
+    () => h2Sessions.get(key) === opening && h2Sessions.delete(key),
+  )
+  return opening
+}
+
+/**
+ * A plain-text HTTP/2 session (h2c, prior knowledge) to an http origin, or
+ * null when the server does not speak it: then HTTP/1.1, remembered.
+ */
+function h2cSession(target, client, key, origin) {
+  const opening = new Promise((resolve, reject) => {
+    const opened = upstreamProxy?.carries(target.host)
+      ? upstreamProxy.connect(target.host, target.port, 'http', reachFor(client))
+      : new Promise((ok, fail) => {
+          const socket = net.connect({ host: target.host, port: target.port, ...reachFor(client) })
+          socket.once('connect', () => ok(socket))
+          socket.once('error', fail)
+        })
+    opened.then(socket => {
+      const session = http2.connect(`http://${authorityOf(target)}`, { createConnection: () => socket })
+      let isSettled = false
+      const refused = () => {
+        if (isSettled) return
+        isSettled = true
+        h2Refused.add(origin)
+        session.destroy()
+        resolve(null)
+      }
+      // the server's SETTINGS say it speaks HTTP/2; anything else (an HTTP/1.1 400, a close) says it does not
+      session.once('remoteSettings', () => {
+        if (isSettled) return
+        isSettled = true
+        const forget = () => {
+          if (h2Sessions.get(key) === opening) h2Sessions.delete(key)
+        }
+        session.on('error', forget)
+        session.on('close', forget)
+        session.on('goaway', forget)
+        session.setTimeout(60_000, () => session.close())
+        resolve(session)
+      })
+      session.once('error', refused)
+      session.once('close', refused)
+      setTimeout(refused, 3000).unref()
     }, reject)
   })
   h2Sessions.set(key, opening)
@@ -811,7 +889,7 @@ function requestOverH2(session, sent, headerPairs, feed) {
       ...h2Headers(headerPairs),
       ':method': sent.method,
       ':path': sent.target.path,
-      ':scheme': 'https',
+      ':scheme': sent.target.scheme,
       ':authority': getHeader(sent.headers, 'host') ?? authorityOf(sent.target),
     }
     // the one TE HTTP/2 allows, which gRPC servers ask for
@@ -831,10 +909,12 @@ function requestOverH2(session, sent, headerPairs, feed) {
 async function requestOverH1(sent, headerPairs, client, feed) {
   const isHttps = sent.target.scheme === 'https'
   const isLocal = isLocalClient(client)
+  const spare = isHttps ? takeSpare(sessionKey(sent.target, client)) : null
   // plain HTTP through the upstream: an HTTP proxy takes the absolute URL, SOCKS and a PAC's DIRECT a pool of their own
-  const where =
-    !isHttps && upstreamProxy?.carries(sent.target.host)
-      ? await upstreamProxy.plainRequest(sent.target, headerPairs.flat())
+  const where = spare
+    ? { host: sent.target.host, port: sent.target.port, path: sent.target.path, headers: headerPairs.flat(), createConnection: () => spare }
+    : !isHttps && upstreamProxy?.carries(sent.target.host)
+      ? await upstreamProxy.plainRequest(sent.target, headerPairs.flat(), sent.method)
       : { host: sent.target.host, port: sent.target.port, path: sent.target.path, headers: headerPairs.flat(), agent: agentFor(sent.target.scheme, sent.target.host, isLocal), ...reachFor(client) }
   return new Promise((resolve, reject) => {
     const upstream = (isHttps ? https : http).request({
@@ -903,6 +983,7 @@ function attachSession(req, res, query) {
   send(readyEvent())
   for (const event of [known.tracking, known.skipped, known.network, known.systemProxy, ...known.rules.values()]) if (event) send(event)
   for (const entry of pinned.values()) send({ t: 'pinned', client: entry.client, host: entry.host })
+  for (const entry of heldExchanges.values()) send({ t: 'held', id: entry.id, phase: entry.phase, view: entry.view, since: entry.since })
   for (const flow of recentFlows.values()) send({ t: 'flow', flow })
   emit({ t: 'sessions', sessions: sessionsList() })
   res.on('close', () => {
@@ -982,6 +1063,13 @@ async function handleControl(req, res) {
     return controlAnswer(res, 200, { ok: true })
   }
   if (command === 'ws/list') return controlAnswer(res, 200, { open: [...liveSockets.keys()] })
+  if (command === 'held/list') return controlAnswer(res, 200, { held: [...heldExchanges.values()].map(({ id, phase, view, since }) => ({ id, phase, view, since })) })
+  if (command === 'held/resume') {
+    const entry = heldExchanges.get(Number(input.id))
+    if (!entry) return controlAnswer(res, 404, { error: `request #${input.id} is not held`, held: [...heldExchanges.keys()] })
+    entry.release({ action: input.action ?? 'continue', changes: input.changes, respond: input.respond })
+    return controlAnswer(res, 200, { ok: true })
+  }
   if (command === 'pinned/list') return controlAnswer(res, 200, { pinned: [...pinned.values()] })
   if (command === 'pinned/clear') {
     const cleared = [...pinned.values()].filter(entry => !input.host || entry.host === input.host)
@@ -1075,6 +1163,87 @@ function eventRecorder(flow) {
     }
   })
   return recorder
+}
+
+// --- breakpoints: an exchange held until the person or Claude lets it go ---------
+
+const heldExchanges = new Map()
+
+function bodyView(buffer) {
+  if (buffer === undefined || buffer === null) return null
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(buffer)
+    return text.length > maxWsText ? `${text.slice(0, maxWsText)}…(${text.length} characters)` : text
+  } catch {
+    return `[binary, ${buffer.length} bytes]`
+  }
+}
+
+/** Holds the exchange of `flow` until it is let go (held/resume), its client leaves, or `timeoutMs` passes. */
+function holdExchange(flow, phase, view, timeoutMs, signal) {
+  return new Promise(resolve => {
+    const entry = { id: flow.id, phase, view, since: Date.now() }
+    const release = answer => {
+      if (heldExchanges.get(flow.id) !== entry) return
+      clearTimeout(timer)
+      heldExchanges.delete(flow.id)
+      delete flow.held
+      emitFlow(flow)
+      emit({ t: 'released', id: flow.id })
+      resolve(answer)
+    }
+    entry.release = release
+    const timer = setTimeout(() => release({ action: 'continue', isTimeout: true }), timeoutMs)
+    signal?.addEventListener('abort', () => release({ action: 'abort', isGone: true }))
+    heldExchanges.set(flow.id, entry)
+    flow.held = phase
+    emitFlow(flow)
+    emit({ t: 'held', id: flow.id, phase, view, since: entry.since })
+  })
+}
+
+/** What the answer to a breakpoint does to the request (or the response), in words for the rule log. */
+function applyHoldAnswer(answer, phase, state) {
+  if (answer.isGone) return 'the client left while it was held'
+  if (answer.isTimeout) return 'nobody answered in time: let go as it was'
+  if (answer.action === 'abort') {
+    state.fail = 'close'
+    return 'cut at the breakpoint'
+  }
+  const changes = answer.action === 'respond' && phase === 'response' ? { ...answer.respond, ...answer.changes } : (answer.changes ?? {})
+  if (answer.action === 'respond' && phase === 'request') {
+    const given = answer.respond ?? {}
+    const headers = Object.entries(given.headers ?? {}).map(([name, value]) => [name, String(value)])
+    const body = Buffer.from(given.json !== undefined ? JSON.stringify(given.json) : String(given.text ?? given.body ?? ''))
+    if (given.json !== undefined && !getHeader(headers, 'content-type')) headers.push(['content-type', 'application/json'])
+    state.respond = { status: Number(given.status) || 200, headers, body }
+    return `answered by hand at the breakpoint: ${state.respond.status}`
+  }
+  const done = []
+  if (phase === 'request' && changes.method) {
+    state.method = String(changes.method).toUpperCase()
+    done.push(`method ${state.method}`)
+  }
+  if (phase === 'request' && changes.url) {
+    setUrl(state.target, String(changes.url))
+    setHeader(state.headers, 'host', hostHeader(state.target))
+    done.push('URL')
+  }
+  if (phase === 'response' && changes.status) {
+    state.status = Number(changes.status)
+    state.statusMessage = undefined
+    done.push(`status ${state.status}`)
+  }
+  for (const [name, value] of Object.entries(changes.headers ?? {})) {
+    setHeader(state.headers, name, value === null ? undefined : String(value))
+    done.push(`header ${name}`)
+  }
+  if (changes.body !== undefined || changes.text !== undefined || changes.json !== undefined) {
+    state.body = Buffer.from(changes.json !== undefined ? JSON.stringify(changes.json) : String(changes.body ?? changes.text))
+    if (changes.json !== undefined) setHeader(state.headers, 'content-type', 'application/json')
+    done.push('body')
+  }
+  return done.length ? `let go with changes: ${done.join(', ')}` : 'let go as it was'
 }
 
 function safeDecode(text) {
@@ -1259,7 +1428,21 @@ async function exchange(req, res, target) {
     headers: sent.headers,
     body: sent.body === undefined ? undefined : sent.body.toString('utf8'),
   })
-  const context = { projectRoot: process.cwd(), signal: abort.signal, log }
+  const context = {
+    projectRoot: process.cwd(),
+    signal: abort.signal,
+    log,
+    // a breakpoint: the request (or the response) held until it is let go
+    hold: async (ruleId, action, ruleState) => {
+      const phase = 'status' in ruleState ? 'response' : 'request'
+      const shown =
+        phase === 'request'
+          ? { method: ruleState.method, url: urlOf(ruleState.target), headers: ruleState.headers, body: bodyView(ruleState.body) }
+          : { method: sent.method, url: urlOf(sent.target), status: ruleState.status, headers: ruleState.headers, body: bodyView(ruleState.body) }
+      const answer = await holdExchange(flow, phase, shown, action.timeoutMs ?? 300_000, abort.signal)
+      return `breakpoint: ${applyHoldAnswer(answer, phase, ruleState)}`
+    },
+  }
   const { candidates, needsBody } = rulesForRequest(activeRules().filter(actsOnHttp), view())
   if (needsBody) sent.body = await readWhole(req)
   const matched = candidates.length ? finalizeRequestRules(candidates, view()) : []
@@ -1296,7 +1479,9 @@ async function exchange(req, res, target) {
         isFed = true
       }
       const send = async () => {
-        const session = isH2(req) && sent.target.scheme === 'https' ? await h2SessionFor(sent.target, flow.client) : null
+        // an HTTP/2 client gets HTTP/2 to the server where it speaks it: over TLS, or in plain text (h2c) when the client spoke that
+        const speaksH2 = sent.target.scheme === 'https' || req.socket?.proxyTarget?.scheme === 'http'
+        const session = isH2(req) && speaksH2 ? await h2SessionFor(sent.target, flow.client) : null
         return session ? requestOverH2(session, sent, headerPairs, feed) : requestOverH1(sent, headerPairs, flow.client, feed)
       }
       try {
@@ -2162,7 +2347,11 @@ async function handleConnect(req, clientSocket, head) {
     // 0x16: a TLS handshake record. Plain HTTP in a tunnel (a ws:// a browser
     // sends through CONNECT) is read like any other; anything else passes as is.
     if (first[0] === 0x16) decrypt(clientSocket, host, port)
-    else if (/^[A-Z]{3,10} \S+ HTTP\/1\.[01]\r?$/m.test(first.subarray(0, 2048).toString('latin1').split('\n')[0])) {
+    else if (first.subarray(0, 14).toString('latin1') === 'PRI * HTTP/2.0') {
+      // HTTP/2 in plain text, with prior knowledge (h2c): a gRPC client to a local service
+      clientSocket.proxyTarget = { scheme: 'http', host, port }
+      serveH2(clientSocket)
+    } else if (/^[A-Z]{3,10} \S+ HTTP\/1\.[01]\r?$/m.test(first.subarray(0, 2048).toString('latin1').split('\n')[0])) {
       clientSocket.proxyTarget = { scheme: 'http', host, port }
       inner.emit('connection', clientSocket)
       clientSocket.resume()

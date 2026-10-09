@@ -53,7 +53,8 @@ The mod reaches these with `curl` through `$.process.run`.
 - **HTTP/2.** The decrypted socket offers ALPN `h2, http/1.1`. An h2 client gets an `http2.createServer()` of its own per connection.
   - A hand-made server-side `TLSSocket` never clears `secureConnecting`, which would make an HTTP/2 session wait forever, so it is cleared by hand.
   - Pseudo-headers stay out of the pairs; `:authority` becomes `host`.
-  - Upstream, an h2 client gets an h2 session per origin and client locality when ALPN says the server speaks h2 (learned once per origin), and HTTP/1.1 otherwise.
+  - Upstream, an h2 client gets an h2 session per origin and client locality when ALPN says the server speaks h2 (learned once per origin), and HTTP/1.1 otherwise. When ALPN picks HTTP/1.1, the probe's TLS socket is kept for five seconds and the request that asked takes it (`spareSockets`), so a new origin costs one connection, not two: through an NTLM office proxy a tunnel is three round trips.
+  - **h2c** (plain-text HTTP/2 with prior knowledge, as gRPC clients speak it to local services): a tunnel whose first bytes are `PRI * HTTP/2.0` is served by the same per-connection HTTP/2 server, its target `http`. Upstream, such a client gets an h2c session (`http2.connect('http://…')` over a plain socket); the server's SETTINGS confirm it, while an HTTP/1.1 answer or a close marks the origin refused, and the request goes as HTTP/1.1.
   - Trailers are forwarded to h2 clients and recorded (`resTrailers`). `te: trailers` is kept for gRPC.
   - A rule's `fail: reset` resets the stream; `close` ends the session.
 - **gRPC and protobuf.** `sidecar/protobuf.mjs` splits the 5-byte frames (gunzipping compressed ones, reading gRPC-Web's trailer frame and its base64 text form) and decodes protobuf without a schema. The result is written beside the body as `<id>.<side>.view`. `grpcStatus` and `grpcMessage` come from the trailers.
@@ -76,12 +77,21 @@ The mod reaches these with `curl` through `$.process.run`.
 
 An entry made while that client had accepted no handshake at all is blind: the client lacks the CA, it does not pin. Blind entries go the moment the client accepts one. Handshakes the client resets (`ECONNRESET`: a browser dropping a preconnect) get no row.
 
+**Breakpoints.** A rule step `breakpoint {timeoutMs?}` (request or response; it reads the body whole) calls the context's `hold`:
+- the exchange waits in `heldExchanges`;
+- the flow carries `held: 'request' | 'response'`, and the event `held` carries a view (method, URL, status, headers, body up to 64 KB);
+- `held/resume {id, action, changes, respond}` lets it go: as it was, changed (method, URL, headers, body, status), answered by hand, or cut;
+- the client leaving, or the time running out (5 minutes by default), lets it go too;
+- `released` follows. Attaching sessions are told what is held.
+
+The mod keeps the list (`heldAtom`), shows the Held view, and gives Claude `resume_request`.
+
 **Upstream certificates.** They are checked unless the host is in `--insecure-hosts`, where an agent and sessions of their own skip the check.
 
 **Upstream proxy** (`sidecar/upstream.mjs`, `--upstream-bypass`). `--upstream-proxy` takes three forms:
-- `http://[user:pass@]host:port`: CONNECT, and plain HTTP in absolute form;
+- `http://[user:pass@]host:port`: CONNECT, and plain HTTP in absolute form. Basic credentials go first; a 407 offering NTLM (or Negotiate) is answered with an NTLM sign-in (`sidecar/ntlm.mjs`: MD4 in JavaScript, since OpenSSL 3 keeps it in its legacy provider, and NTLMv2 checked against the MS-NLMP vectors) on a connection of its own, and the scheme is remembered per proxy. For plain HTTP the scheme is learned with a CONNECT closed as soon as it answers, so no request reaches a server; the negotiate message then goes with an empty request the proxy answers itself, and the real request carries the authenticate message on that connection (`createConnection`). A proxy that takes only Kerberos tickets is named in the error, with Px as the way round;
 - `socks5://[user:pass@]host:port`: RFC 1928 and 1929, names resolved by the proxy;
-- `pac+URL`: the file's `FindProxyForURL` runs in a `vm` sandbox with the standard helpers. DNS goes in two passes: names it asked for are looked up, then it runs again. The routes it answers are tried in order, `DIRECT` included. Every connection to a server goes through it, except this Mac's own addresses (`localhost`, `127.*`, `::1`, `*.local`) and the bypassed hosts:
+- `pac+URL` (credentials in it go to the proxies it names; its server gets the URL without them): the file's `FindProxyForURL` runs in a `vm` sandbox with the standard helpers. DNS goes in two passes: names it asked for are looked up, then it runs again. The routes it answers are tried in order, `DIRECT` included. Every connection to a server goes through it, except this Mac's own addresses (`localhost`, `127.*`, `::1`, `*.local`) and the bypassed hosts:
 - HTTPS agents: `createConnection` that CONNECTs first, then TLS;
 - HTTP/2 sessions;
 - plain HTTP, in absolute form with `Proxy-Authorization`;

@@ -10,7 +10,7 @@
     {
       "name": "wirepane",
       "source": "./",
-      "description": "The debugging proxy Claude can read, inside Claude Code on macOS: HTTPS, HTTP/2, gRPC, WebSockets and server-sent events from the browser, iOS and Android; one-press device setup; rules and mock servers; a doctor that fixes what is in the way; 15 tools and 3 skills for Claude."
+      "description": "The debugging proxy Claude can read, inside Claude Code on macOS: HTTPS, HTTP/2, gRPC, WebSockets and server-sent events from the browser, iOS and Android; one-press device setup; rules and mock servers; a doctor that fixes what is in the way; 16 tools and 3 skills for Claude."
     }
   ]
 }

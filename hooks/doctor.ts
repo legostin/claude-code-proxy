@@ -181,6 +181,31 @@ function trustFindings(facts: DoctorFacts, out: Finding[]) {
 }
 
 const UPSTREAM_HINTS: [RegExp, (host: string, bare: string) => Finding][] = [
+  // the upstream proxy's sign-in: one finding for the proxy, whatever the host
+  [
+    /wants Kerberos sign-in/,
+    () => ({
+      level: 'warn',
+      title: 'The upstream proxy takes only Kerberos sign-in, which Wirepane cannot do',
+      fix: "Run a helper that signs in with this Mac's ticket, such as Px (pip install px-proxy, then px), and set the upstream proxy to http://127.0.0.1:3128.",
+    }),
+  ],
+  [
+    /upstream proxy .* refused the credentials/,
+    () => ({
+      level: 'warn',
+      title: 'The upstream proxy refused the credentials',
+      fix: 'Check the user and the password in the upstream proxy setting; a Windows account goes as DOMAIN%5Cuser.',
+    }),
+  ],
+  [
+    /upstream proxy .* wants credentials/,
+    () => ({
+      level: 'warn',
+      title: 'The upstream proxy wants to know who you are (407)',
+      fix: 'Add user:password@ to the upstream proxy setting, or DOMAIN%5Cuser:password@ for a Windows sign-in: Wirepane signs in with Basic or NTLM, whichever it asks for.',
+    }),
+  ],
   [
     /ENOTFOUND|EAI_AGAIN/,
     host => ({
@@ -219,10 +244,10 @@ function upstreamFindings(facts: DoctorFacts, out: Finding[]) {
     if (flow.errorCode !== 'upstream' || !flow.error) continue
     for (const [pattern, make] of UPSTREAM_HINTS) {
       if (!pattern.test(flow.error)) continue
-      const key = `${pattern.source}|${flow.host}`
-      if (seen.has(key)) break
-      seen.add(key)
       const finding = make(flow.port === 443 || flow.port === 80 ? flow.host : `${flow.host}:${flow.port}`, flow.host)
+      // a host's finding once per host; the upstream proxy's once
+      if (seen.has(finding.title)) break
+      seen.add(finding.title)
       out.push({ ...finding, detail: [finding.detail, `#${flow.id}: ${flow.error}`].filter(Boolean).join(' ') })
       break
     }

@@ -13,16 +13,17 @@
 
 export const REQUEST_ACTIONS = [
   'delay', 'throttle', 'setHeader', 'removeHeader', 'setQuery', 'removeQuery',
-  'mapRemote', 'replaceUrl', 'setBody', 'replaceBody', 'mergeJson', 'respond', 'fail', 'script',
+  'mapRemote', 'replaceUrl', 'setBody', 'replaceBody', 'mergeJson', 'respond', 'fail', 'script', 'breakpoint',
 ]
 export const RESPONSE_ACTIONS = [
   'delay', 'throttle', 'setStatus', 'setHeader', 'removeHeader',
-  'setBody', 'replaceBody', 'mergeJson', 'fail', 'script',
+  'setBody', 'replaceBody', 'mergeJson', 'fail', 'script', 'breakpoint',
 ]
 export const MESSAGE_ACTIONS = ['replaceMessage', 'setMessage', 'mergeJson', 'drop', 'delay', 'reply', 'send', 'close', 'script']
 // what a step may do as a WebSocket opens, before any message
 const OPEN_ACTIONS = new Set(['send', 'close', 'delay', 'script'])
-const BODY_ACTIONS = new Set(['setBody', 'replaceBody', 'mergeJson', 'script'])
+// a breakpoint shows the whole body, and may change it
+const BODY_ACTIONS = new Set(['setBody', 'replaceBody', 'mergeJson', 'script', 'breakpoint'])
 const MATCH_KEYS = ['url', 'host', 'path', 'methods', 'headers', 'query', 'bodyContains', 'status', 'contentType']
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 
@@ -245,6 +246,9 @@ function actionErrors(action, phase, where) {
       break
     case 'script':
       need(isString(action.code) && action.code.trim() !== '', 'code must be a non-empty string')
+      break
+    case 'breakpoint':
+      if (action.timeoutMs !== undefined) need(isNumber(action.timeoutMs, 100, 3_600_000), 'timeoutMs must be 100 to 3600000')
       break
   }
   return errors
@@ -475,6 +479,8 @@ export function describeAction(action) {
       return action.kind === 'timeout' ? 'never answer (time out)' : action.kind === 'reset' ? 'reset the connection' : 'close the connection'
     case 'script':
       return `run a script (${action.code.split('\n').length} lines)`
+    case 'breakpoint':
+      return `pause for you or Claude to look and change (let go after ${duration(action.timeoutMs ?? 300_000)})`
     case 'replaceMessage':
       return `replace ${action.pattern} with "${short(action.with, 30)}"`
     case 'setMessage':

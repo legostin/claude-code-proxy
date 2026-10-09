@@ -31,6 +31,16 @@ export type ProxyFlow = {
   sseEvents?: number
   /** The request this one sent again (replay_request). */
   replayOf?: number | null
+  /** Held at a rule's breakpoint, before it is sent (request) or before the client gets the answer (response). */
+  held?: 'request' | 'response'
+}
+
+/** An exchange held at a breakpoint, as the proxy shows it. */
+export type ProxyHeld = {
+  id: number
+  phase: 'request' | 'response'
+  since: number
+  view: { method: string; url: string; status?: number; headers: [string, string][]; body: string | null }
 }
 
 export type ProxyCa = {
@@ -137,7 +147,7 @@ export type ProxyHealth = {
 }
 
 export type ProxyView = {
-  mode: 'list' | 'detail' | 'setup' | 'rules' | 'domains' | 'health'
+  mode: 'list' | 'detail' | 'setup' | 'rules' | 'domains' | 'health' | 'held'
   selectedId: number | null
   setupTab: ProxySetupTab
   layout?: 'list' | 'tree'
@@ -179,6 +189,8 @@ declare module 'claude-code' {
       pinned: { client: string | null; host: string }[]
       /** The doctor's last findings, for the Health view. */
       health: ProxyHealth
+      /** Exchanges held at a breakpoint now. */
+      held: ProxyHeld[]
     }
   }
 }

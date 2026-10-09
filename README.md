@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Claude Code mod](https://img.shields.io/badge/Claude%20Code-mod-d97757.svg)](https://claude.com/claude-code)
 
-**Wirepane** turns [Claude Code](https://claude.com/claude-code) into an HTTPS debugging proxy for the browser, the iOS Simulator, iPhones, the Android emulator and Android phones. It is a mod: a plugin of function hooks. It decrypts HTTP/1.1, HTTP/2, gRPC, WebSockets and server-sent events, shows them in a pane next to your conversation, and gives Claude the same traffic through 15 tools.
+**Wirepane** turns [Claude Code](https://claude.com/claude-code) into an HTTPS debugging proxy for the browser, the iOS Simulator, iPhones, the Android emulator and Android phones. It is a mod: a plugin of function hooks. It decrypts HTTP/1.1, HTTP/2, gRPC, WebSockets and server-sent events, shows them in a pane next to your conversation, and gives Claude the same traffic through 16 tools.
 
 So instead of copying requests into the chat, you ask:
 
@@ -51,7 +51,7 @@ CERT CONNECT gateway.icloud.com:443                                   0B     0ms
 ## What is in it
 
 **It reads every protocol a modern app speaks.**
-- **HTTP/2** to clients that offer it, and to servers that speak it. HTTP/1.1 for the rest, both ways independently.
+- **HTTP/2** to clients that offer it, and to servers that speak it. HTTP/1.1 for the rest, both ways independently. Plain-text HTTP/2 (h2c, prior knowledge) too, as a gRPC client speaks it to a local service through the proxy.
 - **gRPC and gRPC-Web**, with trailers forwarded. Bodies are decoded without a schema: field numbers, values, nested messages. A failed call shows its status, `gRPC NOT_FOUND: no such user`.
 - **Protobuf** bodies (`application/x-protobuf`), decoded the same way.
 - **WebSockets**, message by message, both ways, with timing and close codes. Compression is taken out of the offer so every message stays readable. In the detail of a live socket, you can type a message to either side.
@@ -65,6 +65,7 @@ CERT CONNECT gateway.icloud.com:443                                   0B     0ms
 - **Phones:** the exact address to type and a QR code. `adb reverse` for Android phones on USB, so no Wi-Fi is needed.
 
 **It changes traffic, not just shows it.** A rules engine for requests, responses and WebSocket messages:
+- breakpoints: a request or a response held until you or Claude let it go, changed or not;
 - mocks, delays, throttling, errors, dropped connections;
 - rewritten headers, URLs and JSON;
 - sending requests to your local server;
@@ -72,7 +73,7 @@ CERT CONNECT gateway.icloud.com:443                                   0B     0ms
 
 Claude writes rules in plain words. You manage them in the Rules view.
 
-**It works on office networks.** An upstream proxy carries every connection to the servers: HTTP, HTTPS, HTTP/2, tunnels and WebSockets. It can be an HTTP proxy with credentials, SOCKS5, or a PAC file that picks per URL. The doctor offers the network's own proxy for it.
+**It works on office networks.** An upstream proxy carries every connection to the servers: HTTP, HTTPS, HTTP/2, tunnels and WebSockets. It can be an HTTP proxy that signs in with Basic or Windows NTLM credentials, SOCKS5, or a PAC file that picks per URL. The doctor offers the network's own proxy for it.
 
 **It tells you what is wrong, and fixes it.** The [doctor](#the-doctor) checks the proxy, the system proxy, VPNs, other proxy apps, the CA on each client, pinned hosts, upstream failures and Android devices. Each finding names its fix, and many have a button. The proxy repairs some things on its own:
 - **Pinned hosts** pass through after two refusals, so the app keeps working.
@@ -101,6 +102,7 @@ Claude writes rules in plain words. You manage them in the Rules view.
 | `wait_for_request({ filter, timeout_s?, until? })` | Waits for the request the person is about to trigger, and answers it the moment it ends. |
 | `diff_requests({ a, b })` | What differs between two requests: method, URL, query, headers, status, JSON field by field. |
 | `replay_request({ id, method?, url?, headers?, body?, json? })` | Sends a request again, as it was or changed, through the proxy, so it is recorded and rules apply. |
+| `resume_request({ id, action?, changes?, respond? })` | Lets go of an exchange held at a breakpoint: as it was, changed (method, URL, headers, body, status), answered by hand, or cut. |
 | `send_ws_message({ id, to, text \| json \| b64 })` | Injects a message into a live WebSocket, to the client or to the server. |
 | `close_websocket({ id, code?, reason? })` | Closes a live WebSocket, to test reconnects. |
 | `add_rule`, `update_rule`, `remove_rule`, `list_rules` | The rules file, applied at once. |
@@ -196,6 +198,7 @@ Rules change matching requests before they are sent, responses before the client
 | `respond {status, headers?, text \| json \| file}`: no server asked (101 on a WebSocket: a mock server) | ✓ | |
 | `setStatus {status}` | | ✓ |
 | `fail {kind: reset \| close \| timeout}` | ✓ | ✓ |
+| `breakpoint {timeoutMs?}`: held until you (the Held view) or Claude (`resume_request`) let it go, changed or not; after its time (5 min) it goes on as it was | ✓ | ✓ |
 | `script {code}` | ✓ | ✓ |
 
 | WebSocket step (`messages`) | What it does |
@@ -225,7 +228,7 @@ Terms separated by spaces must all hold; a leading `-` negates one. Free text ma
 | `host:api.example.com`, `host:*.example.com` | the host |
 | `path:/v1/login` | a substring of the path |
 | `type:json\|html\|xml\|js\|css\|img\|font\|media\|text\|form\|grpc\|ws\|tunnel\|other` | the content type |
-| `is:error\|ok\|pending\|tunnel\|ws\|https\|h2\|grpc\|rejected\|modified` | the state (`error` includes failed gRPC calls) |
+| `is:error\|ok\|pending\|tunnel\|ws\|https\|h2\|grpc\|held\|rejected\|modified` | the state (`error` includes failed gRPC calls; `held`: waiting at a breakpoint) |
 | `client:192.168.1.20`, `rule:slow-feed` | the client, a rule |
 
 ## Tracked domains
@@ -279,7 +282,7 @@ Set them in `/config`, or in `/plugin` → **Installed** → **wirepane** → **
 | Listen on | `local` | `lan` opens it to phones on the network (never to this Mac's localhost) |
 | Hosts not to decrypt | `*.apple.com,*.icloud.com,*.mzstatic.com,*.apple-cloudkit.com` | tunnelled untouched; hosts that refuse the certificate twice are added on their own |
 | Accept these upstream certificates | (none) | dev servers with self-signed certificates, by host |
-| Upstream proxy | (none) | an office's or a VPN's proxy every connection to a server goes through: `http://[user:password@]host:port`, `socks5://[user:password@]host:port`, or a PAC file as `pac+http://host/proxy.pac` |
+| Upstream proxy | (none) | an office's or a VPN's proxy every connection to a server goes through: `http://[user:password@]host:port` (Basic or NTLM, whichever it asks for; a Windows `DOMAIN\user` as `DOMAIN%5Cuser`), `socks5://[user:password@]host:port`, or a PAC file as `pac+http://[user:password@]host/proxy.pac` (the credentials go to the proxies it names, not to the PAC's server) |
 | Reach directly | (none) | hosts reached without the upstream proxy; this Mac's own addresses and `*.local` always are |
 | Requests kept | `2000` | |
 
@@ -369,11 +372,9 @@ No. It captures the clients you point at it.
 ## Limits
 
 - **HTTP/3 (QUIC)** is UDP and never meets an HTTP proxy. Chrome drops to HTTP/2 behind one; an app that forces QUIC is not seen.
-- **h2c:** plain-text HTTP/2 with prior knowledge is not supported. HTTP/2 over TLS and HTTP/1.1 upgrades are.
-- **Breakpoints:** a request cannot be paused for hand editing. Rules, `replay_request` and scripts cover most of that.
 - **Protobuf** is decoded without a schema: field numbers, not names.
 - **WebSocket compression:** permessage-deflate is taken out of the client's offer. A server that insists on it may refuse; a compressed message passes on undecoded.
-- **Upstream proxy:** HTTP (Basic credentials), SOCKS5 and PAC files work; NTLM and Kerberos sign-in do not.
+- **Kerberos:** an upstream proxy that takes only Kerberos tickets needs a helper that signs in for you, such as [Px](https://github.com/genotrance/px); point `upstreamProxy` at it. Basic and NTLM (also inside Negotiate) sign in by themselves.
 - **Android system CA:**
   - It needs an emulator image that allows root: Google APIs, not Google Play.
   - It lasts until a reboot.
