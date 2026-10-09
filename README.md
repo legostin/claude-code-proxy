@@ -1,248 +1,273 @@
-# Wirepane: an HTTPS debugging proxy inside Claude Code
+# Wirepane: the debugging proxy that Claude can read
 
 [![CI](https://github.com/legostin/wirepane/actions/workflows/ci.yml/badge.svg)](https://github.com/legostin/wirepane/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Claude Code mod](https://img.shields.io/badge/Claude%20Code-mod-d97757.svg)](https://claude.com/claude-code)
 
-**Wirepane** is a [Claude Code](https://claude.com/claude-code) mod (a plugin of function hooks).
-It turns Claude Code into an HTTPS debugging proxy in the spirit of Proxyman, Charles or mitmproxy:
-it intercepts and decrypts the HTTP and HTTPS traffic of your browser, the iOS Simulator, an iPhone,
-the Android emulator or an Android phone. It shows every request in a filterable list, and lets
-Claude read the same traffic, so you can ask *"why does the login request return 401?"* and it
-looks at the real request and response.
+**Wirepane** turns [Claude Code](https://claude.com/claude-code) into an HTTPS debugging proxy for the browser, the iOS Simulator, iPhones, the Android emulator and Android phones. It is a mod: a plugin of function hooks. It decrypts HTTP/1.1, HTTP/2, gRPC, WebSockets and server-sent events, shows them in a pane next to your conversation, and gives Claude the same traffic through 15 tools.
 
-[Website](https://legostin.github.io/wirepane/) · [Install](#install) · [What it runs and changes](#what-it-runs-and-what-it-changes) · [Design notes](docs/design.md)
+So instead of copying requests into the chat, you ask:
+
+> *"Why does checkout return 402 on the phone but not in the browser?"*
+> *"Wait while I tap Log in, then tell me what the app sent."*
+> *"Make the feed take 3 seconds and fail one request in five."*
+> *"Answer the price socket with a mock that sends a tick every subscription."*
+> *"Nothing shows up from the emulator. Fix it."*
+
+Claude finds the request, reads only the part it needs, compares the one that works with the one that fails, replays it with a change, writes a rule, and fixes your code. When something is in the way, a missing CA, a pinned certificate, a VPN or Charles holding the system proxy, the doctor names it and fixes it.
+
+[Website](https://legostin.github.io/wirepane/) · [Install](#install) · [What Claude can do](#tools-for-claude) · [Doctor](#the-doctor) · [Rules](#rules) · [Limits](#limits) · [Design notes](docs/design.md)
 
 ## Install
 
-Requires macOS, Claude Code 2.1.292 or newer, and `openssl` (built into macOS). The proxy runs on
-Node.js 18 or newer, which it finds by itself: on PATH, or where Homebrew, Volta, nvm, fnm, mise,
-asdf, nodenv or MacPorts put it. With none, the pane offers to install it. At the Claude Code prompt:
+You need macOS, Claude Code 2.1.292 or newer, and `openssl` (built into macOS).
+
+The proxy runs on Node.js 18 or newer and finds it by itself: on PATH, or where Homebrew, Volta, nvm, fnm, mise, asdf, nodenv or MacPorts put it. With no Node at all, the pane offers to install it.
+
+At the Claude Code prompt:
 
 ```
 /plugin install wirepane --marketplace legostin/wirepane
 ```
 
-Answer `y` to add the marketplace and pick a scope. The same from a shell:
+Or from a shell:
 
 ```sh
 claude plugin marketplace add legostin/wirepane
 claude plugin install wirepane@wirepane
 ```
 
-Then run `/proxy`: the proxy starts on `127.0.0.1:8899` and the pane opens. An empty list offers
-the ways in it found on this Mac.
+Then run `/proxy`. The proxy starts on `127.0.0.1:8899`, the pane opens, and an empty list offers the ways in it found on this Mac: a browser, a booted simulator, an emulator, a phone.
 
 ```
-● 127.0.0.1:8899 · 342 requests              [ Stop ]  View [ List ] [ Tree ]  [ Clear ] [ Setup ]
+● 127.0.0.1:8899 · 342 requests          [ Stop ]  View [ List ] [ Tree ]  [ Clear ] [ Setup ] [ Rules (2) ] [ Health (1) ]
 Filter host:*.api.example.com is:error
 401  POST    https://api.example.com/v1/login                     1.2KB   180ms
-503  GET     https://api.example.com/v1/feed                        87B    2.1s
+200  POST    ✎ https://api.example.com/pkg.Cart/Checkout             41B    95ms
+101  GET     wss://api.example.com/chat                          ↑14 ↓52       …
 CERT CONNECT gateway.icloud.com:443                                   0B     0ms
 ```
 
-The command takes:
+## What is in it
 
-```
-/proxy            open the pane and start the proxy
-/proxy setup      set up a browser, iOS, Android, macOS or CLI client
-/proxy stop       stop it (and point Android devices back)
-/proxy clear      clear the list
-/proxy rules      the rules that change requests and responses
-/proxy track      the domains this session decrypts and records
-/proxy status     one line about its state
-/proxy tree       show the requests as a tree (host → path → requests)
-/proxy list       show them as a flat list
-```
+**It reads every protocol a modern app speaks.**
+- **HTTP/2** to clients that offer it, and to servers that speak it. HTTP/1.1 for the rest, both ways independently.
+- **gRPC and gRPC-Web**, with trailers forwarded. Bodies are decoded without a schema: field numbers, values, nested messages. A failed call shows its status, `gRPC NOT_FOUND: no such user`.
+- **Protobuf** bodies (`application/x-protobuf`), decoded the same way.
+- **WebSockets**, message by message, both ways, with timing and close codes. Compression is taken out of the offer so every message stays readable. In the detail of a live socket, you can type a message to either side.
+- **Server-sent events**, event by event, as they arrive, with the millisecond each one came. Made for LLM streaming APIs.
+- gzip, brotli, deflate and zstd, decoded.
 
-## Why
+**It reaches every client in one press.**
+- **A separate browser:** Chrome, Edge, Brave or Chromium, trusting the proxy by SPKI hash. No certificate to install.
+- **iOS Simulator:** boots, gets the CA, the system proxy turns on.
+- **Android emulator:** starts behind the proxy and opens the CA page. On Google APIs images, *Trust in all apps* makes the CA a system CA.
+- **Phones:** the exact address to type and a QR code. `adb reverse` for Android phones on USB, so no Wi-Fi is needed.
 
-Debugging a mobile or web client usually means a separate proxy app, a certificate dance on every
-device, and copying requests into the chat by hand. **Wirepane** keeps all of it where you already
-work:
+**It changes traffic, not just shows it.** A rules engine for requests, responses and WebSocket messages:
+- mocks, delays, throttling, errors, dropped connections;
+- rewritten headers, URLs and JSON;
+- sending requests to your local server;
+- a whole mock WebSocket server.
 
-- **No separate app.** The proxy, its certificate authority and the request list live in Claude Code.
-- **A quick start where you land.** An empty list offers the ways in found on this Mac: open a
-  browser, use a simulator, start an emulator, set up a phone, track only your app.
-- **One click for a browser.** It opens a separate Chrome, Edge, Brave or Chromium window whose
-  whole traffic goes through the proxy, localhost included, with **no certificate to install**.
-- **Simulators and emulators set up for you.** Pick a simulator from the list and press **Use**: it
-  boots, gets the CA, and the Mac's system proxy points at the proxy. Pick an Android emulator and
-  it starts with its traffic already going through the proxy.
-- **Claude Code keeps working.** With the macOS system proxy on, every app on the Mac goes through
-  the proxy; Claude's hosts bypass it and anything Claude runs is tunnelled, never decrypted.
-- **Claude sees the traffic.** Two tools give the model the request list and any request in full:
-  headers and decoded bodies.
+Claude writes rules in plain words. You manage them in the Rules view.
 
-## Features
+**It works on office networks.** An upstream proxy carries every connection to the servers: HTTP, HTTPS, HTTP/2, tunnels and WebSockets. It can be an HTTP proxy with credentials, SOCKS5, or a PAC file that picks per URL. The doctor offers the network's own proxy for it.
 
-- MITM HTTPS proxy: decrypts TLS with per-host certificates from its own local CA. Plain HTTP,
-  WebSocket upgrades and server-sent events pass through.
-- Request list with a filter language: `method:POST status:4xx host:*.example.com type:json is:error -text`.
-- A tree view: requests grouped by host and path, each node with its request and failure counts.
-  Switch with **View: List / Tree** in the pane (`l` / `t`) or `/proxy tree`; the choice is remembered.
-- The exact proxy address for each client: the Mac's Wi-Fi address for a phone, picked over VPN tunnels and
-  virtual machine bridges, and a QR code the phone scans to open the setup page and get the certificate.
-- Request detail: headers, pretty-printed JSON, gzip, brotli, deflate and zstd decoded,
-  **Copy as curl**, **To prompt**.
-- Diagnoses certificate trouble: a client that refuses the proxy certificate (CA not trusted, or
-  certificate pinning) shows up as a `CERT` row instead of silently failing.
-- Setup page served by the proxy itself at `http://claude.proxy/`: an iOS `.mobileconfig`, an
-  Android `.crt` and a `.pem`.
-- Hosts to tunnel without decryption (pinned services), Apple's by default.
-- Safe on the network: in `lan` mode, phones can use the proxy, but nothing on the network can use
-  it to reach this Mac's localhost.
-- Tracked domains per session: decrypt and record only your app's hosts (wildcards welcome);
-  everything else passes through untouched, so a phone's own services keep working.
-- A rules engine: delays, throttling, mocks, rewritten headers, URLs and bodies, status codes,
-  dropped connections and scripts, chained by priority; managed in the pane and by Claude.
-- No dependencies: a Node.js sidecar and `openssl`, nothing to install from npm.
+**It tells you what is wrong, and fixes it.** The [doctor](#the-doctor) checks the proxy, the system proxy, VPNs, other proxy apps, the CA on each client, pinned hosts, upstream failures and Android devices. Each finding names its fix, and many have a button. The proxy repairs some things on its own:
+- **Pinned hosts** pass through after two refusals, so the app keeps working.
+- **A system proxy left on** by a killed proxy is put back by a watchdog.
+- **A self-signed dev server** gets its certificate accepted in one press, for that host only.
+
+**It keeps Claude's context small.** Long URLs are cut, requests are read part by part, and bodies share one budget. `json_path` picks one field of a big body. `since` and `wait_for_request` replace polling.
+
+**One proxy, every session.** A single proxy serves every Claude Code session on the Mac:
+- A second session attaches and sees what the first recorded.
+- Each project's rules apply while its session is open.
+- The Health view shows the process, its memory and the sessions using it.
+
+**It runs locally.**
+- No account, no telemetry, no npm dependencies.
+- Its CA is made on your machine.
+- Recordings stay in `~/.claude/proxy-mod`.
+
+## Tools for Claude
+
+| Tool | What it does |
+| --- | --- |
+| `list_requests({ filter?, since?, limit? })` | The proxy's state and one line per request: id, method, status, URL (long ones cut), size, time, type, WebSocket and event counts, rules, error. `since` lists only what is new. |
+| `get_request({ id, part?, json_path?, max_chars?, from?, limit? })` | One request, by part: `summary`, `headers`, `request`, `response`, `messages`, `all`. Bodies share one budget. JSON is compact when pretty would not fit, and `json_path` picks one field. gRPC, protobuf, trailers, WebSocket messages and events are included. |
+| `search_requests({ text, where?, filter? })` | Which requests hold some text in their URL, headers, bodies, messages or events, with the text in context. |
+| `wait_for_request({ filter, timeout_s?, until? })` | Waits for the request the person is about to trigger, and answers it the moment it ends. |
+| `diff_requests({ a, b })` | What differs between two requests: method, URL, query, headers, status, JSON field by field. |
+| `replay_request({ id, method?, url?, headers?, body?, json? })` | Sends a request again, as it was or changed, through the proxy, so it is recorded and rules apply. |
+| `send_ws_message({ id, to, text \| json \| b64 })` | Injects a message into a live WebSocket, to the client or to the server. |
+| `close_websocket({ id, code?, reason? })` | Closes a live WebSocket, to test reconnects. |
+| `add_rule`, `update_rule`, `remove_rule`, `list_rules` | The rules file, applied at once. |
+| `track_domains({ add?, remove?, set?, enabled? })` | Decrypt and record only the app's hosts, and see what passed through. |
+| `export_har({ filter?, file? })` | HAR 1.2 with bodies and WebSocket messages, for a teammate or Chrome DevTools. |
+| `diagnose()` | The doctor: every check, each finding with its fix. |
+
+The plugin also ships three skills that Claude loads when the task calls for them:
+
+- **`wirepane-debugging`:** the order that works, from filter to summary to part, then search, diff, replay and verify. Also how to read gRPC, WebSocket and SSE traffic cheaply.
+- **`wirepane-troubleshooting`:** symptom, check, fix, for everything the doctor knows. It includes the fix in your own app: Android `network_security_config`, OkHttp and iOS pinning in debug builds, Flutter `HttpOverrides`, and proxy settings for Node, Go, Python, Java, Docker and Unity.
+- **`wirepane-rules`:** recipes for mocks, latency, chaos, JSON rewrites, GraphQL operations and WebSocket mocks. Every one is tested to validate.
+
+## The doctor
+
+`/proxy doctor`, the **Health** view (`h`), or Claude's `diagnose` check:
+
+| Check | Finds | Fix |
+| --- | --- | --- |
+| The proxy and its process | Stopped, failed, a port taken (and by whom; a Wirepane 0.7 proxy still running after an update); pid, uptime, memory, disk, sessions | Start again, Stop it and start, Restart |
+| The system proxy | Left on by a dead proxy (no internet); held by Charles or Proxyman | Put back; Setup |
+| VPN and other proxy apps | A `utun` default route; Charles, Proxyman, mitmproxy, HTTP Toolkit running | What to try |
+| The CA on this Mac | Safari and Mac apps would refuse HTTPS | Trust on this Mac |
+| Refusals per client | Every host refused: the CA is missing. One host among working ones: it pins its certificate | Setup for that client, or Never decrypt it |
+| Pinned hosts | Passed through after two refusals (or an OkHttp-style close right after the handshake) | Decrypt them again once trusted |
+| Upstream failures | DNS (`ENOTFOUND`), self-signed dev servers, closed ports, `localhost` confusion, unreachable networks | Accept its certificate; what to check |
+| The network's own proxy | The system proxy pointed at an office's or a VPN's proxy before Wirepane took its place | Use it upstream |
+| Tracked domains | A list that matches nothing that came, and what passed instead | Add the real hosts |
+| Android devices | Not pointed at the proxy; apps that will not trust a user CA; a rootable image | Setup; Trust in all apps |
 
 ## Set up a client
 
 | Client | How |
 | --- | --- |
-| A separate browser | **Setup → Browser → Open Google Chrome** (or Edge, Brave, Chromium). It starts a new instance with a profile of its own, `--proxy-server`, `--proxy-bypass-list=<-loopback>` so localhost is captured too, and `--ignore-certificate-errors-spki-list` so it trusts the proxy's certificates without touching the keychain. |
-| iOS Simulator | **Setup → iOS**: the simulators on this Mac, booted first. **Use** (or **Boot & use**) boots one, adds the CA (`simctl keychain add-root-cert`) and turns the macOS system proxy on, since a simulator has no proxy setting of its own. |
-| iPhone / iPad | **Setup → iOS → iPhone / iPad**: **Listen on LAN**, scan the QR code with the Camera to install the profile, turn it on under **Certificate Trust Settings**, then set the Wi-Fi proxy to the server and port shown. The section confirms when the phone's traffic arrives, and says so when the phone refuses the certificate. |
-| Android emulator | **Setup → Android → Emulator**: your AVDs. **Start through the proxy** launches one with `-http-proxy`, waits for it to boot and opens the CA page in its browser: one tap installs the certificate. A running emulator is pointed at the proxy with **Android → proxy** (`10.0.2.2`) and back with **Revert**. |
-| Android phone on USB | **Setup → Android → Phone**: **Point USB phones at the proxy** uses `adb reverse`, so no Wi-Fi is needed. |
-| Android phone on Wi-Fi | **Setup → Android → Phone**: **Listen on LAN**, scan the QR code to download the certificate and install it, then set the Wi-Fi proxy to the hostname and port shown. Apps trust user CAs only with a `network_security_config`; **config snippet** copies one. |
-| Safari and native Mac apps | **Setup → macOS → Turn on for this Mac** points the system proxy here (Claude's hosts on its bypass list), **Trust CA on this Mac** adds the CA to the login keychain. Both are put back when the proxy stops. |
-| curl, Node, Python, Go | `curl -x http://127.0.0.1:8899 --cacert ~/.claude/proxy-mod/ca/ca.pem …`; **Setup → macOS / CLI** copies `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE`. |
+| A separate browser | **Setup → Browser → Open Google Chrome** (or Edge, Brave, Chromium). It starts a new instance with a profile of its own:<br>`--proxy-server`<br>`--proxy-bypass-list=<-loopback>`, so localhost is captured too<br>`--ignore-certificate-errors-spki-list`, so it trusts the proxy without the keychain<br>HTTP/2 and WebSockets work as they do anywhere. |
+| iOS Simulator | **Setup → iOS**: **Use** (or **Boot & use**) boots one, adds the CA (`simctl keychain add-root-cert`) and turns on the macOS system proxy, since a simulator has no proxy setting of its own. |
+| iPhone / iPad | **Setup → iOS → iPhone / iPad**:<br>1. **Listen on LAN**.<br>2. Scan the QR code to install the profile.<br>3. Turn on full trust under **Certificate Trust Settings**.<br>4. Set the Wi-Fi proxy to the address shown.<br>The section confirms when traffic arrives. |
+| Android emulator | **Setup → Android → Emulator**: **Start through the proxy** launches an AVD with `-http-proxy` and opens the CA page in its browser.<br>Apps trust a user CA only with a `network_security_config`. On a Google APIs image, **Health → Trust in all apps** makes the CA a system CA until the next reboot. |
+| Android phone | **Setup → Android → Phone**: on USB, **Point USB phones at the proxy** (`adb reverse`, no Wi-Fi needed); on Wi-Fi, **Listen on LAN**, the QR code, and the proxy setting shown. |
+| Safari and Mac apps | **Setup → macOS → Turn on for this Mac** (Claude's hosts bypass it) and **Trust CA on this Mac**. Both are put back when the proxy stops. |
+| curl, Node, Python, Go, Java, Docker | **Setup → CLI** copies `HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE`. The troubleshooting skill covers the clients that ignore the proxy. |
 
-## Claude Code keeps working
+### Claude Code keeps working
 
-Claude Code does not trust the proxy's CA, so a connection of its own that the proxy decrypted
-would fail; with the macOS system proxy on, its traffic would come here like every app's. Two
-guards keep it whole:
+Claude Code does not trust the proxy's CA, and with the system proxy on, its own traffic would come here. Two guards keep it whole:
 
-- Anthropic's and Claude's hosts (`*.anthropic.com`, `*.claude.ai`, `*.claude.com`) are on the
-  system proxy's bypass list, and the proxy never decrypts them anyway.
-- While the system proxy points at the proxy, a local connection whose process descends from
-  Claude (any Claude Code session, the commands and MCP servers it runs, the Claude app) is
-  tunnelled untouched. Every other app is decrypted as usual.
+- **Claude's hosts are bypassed.** Anthropic's and Claude's hosts are on the system proxy's bypass list, and the proxy never decrypts them anyway.
+- **Claude's processes are tunnelled.** A local connection from a process that descends from Claude Code (the commands and MCP servers it runs, the Claude app) is tunnelled untouched.
 
-The system proxy switch keeps the settings it replaced and puts them back when the proxy stops,
-when the session ends, and, from the proxy itself, if Claude Code quits.
+## Rules
 
-## Tracked domains
+Rules change matching requests before they are sent, responses before the client gets them, and WebSocket messages both ways.
 
-A phone talks to dozens of hosts: push, iCloud, analytics, other apps. Turn on the tracking list
-and the proxy decrypts and records only the domains you name; every other connection passes
-through untouched and unrecorded, so the phone's own services keep working (no `CERT` failures on
-pinned hosts) and the list holds your app's traffic alone.
-
-```
-/proxy track app.kolesa.kz *.kolesa.kz     track these (wildcards: *.example.com covers example.com)
-/proxy untrack app.kolesa.kz               stop tracking one
-/proxy untrack                             switch the list off: every domain again
-/proxy track                               open the Domains view
-```
-
-The **Domains** view (`d`) lists the patterns with how many requests each caught, switches the
-list on and off, and shows the hosts that passed through untracked, busiest first, each with
-**track** and **track \*.domain** buttons: connect the phone, use the app, and pick its hosts from
-there. The list belongs to the Claude Code session and comes back with `--resume`. Claude manages
-it with `mcp__wirepane__track_domains`.
-
-Some clients connect to an address rather than a name (the Android emulator resolves names
-itself): the proxy reads the host name from the TLS handshake, so the list, the rules and the
-request list all see `api.example.com`, not `203.0.113.7`.
-
-## Rules: change requests and responses
-
-Rules change matching requests before they are sent and their responses before the client gets
-them: slow an endpoint down, answer it with a mock, flip a status code, rewrite a JSON field, send
-`/v1/*` to your local server, drop the connection. Ask Claude in plain words ("make GET /api/feed
-take 3 seconds", "answer POST /login with a 500") and it writes the rule; the **Rules** view
-(`/proxy rules`, or `r` in the pane) lists them with what each does in words, turns them on and
-off, and moves them up and down.
-
-Rules live in the project, in `.claude/proxy-rules.json`, so they can be committed and shared. The
-proxy reloads the file the moment it changes.
+- **Writing them.** Ask Claude in plain words and it writes the rule. The **Rules** view (`r`) lists them in words, with hit counts. It turns them on and off, reorders them, and removes them.
+- **Where they live.** In the project, in `.claude/proxy-rules.json`, so you can commit them. The file is reloaded the moment it changes.
+- **Order.** The first rule applies first. Every matching rule applies in turn; `"stop": true` ends the chain.
 
 ```json
 {
   "rules": [
     {
       "id": "slow-feed",
-      "description": "Simulate a slow backend for the feed",
+      "description": "The feed on a bad 3G line, failing now and then",
       "match": { "methods": ["GET"], "host": "api.example.com", "path": "/v1/feed*" },
-      "request": [{ "type": "delay", "ms": 2000 }],
-      "response": [
-        { "type": "setStatus", "status": 503 },
-        { "type": "mergeJson", "json": { "error": "down" } }
+      "request": [{ "type": "delay", "ms": 800, "msMax": 2500 }],
+      "response": [{ "type": "throttle", "bytesPerSecond": 50000 }]
+    },
+    {
+      "id": "mock-prices-socket",
+      "description": "A price feed, with no server",
+      "match": { "path": "/ws/prices" },
+      "request": [{ "type": "respond", "status": 101 }],
+      "messages": [
+        { "type": "send", "on": "open", "to": "client", "json": { "type": "hello" } },
+        { "type": "reply", "when": "\"subscribe\"", "json": { "type": "price", "price": 42.5 } }
       ]
     }
   ]
 }
 ```
 
-**Order and chaining.** The first rule applies first. Every matching rule that is on applies, in
-order, and the actions inside a rule apply in order; `"stop": true` ends the chain.
+**Match.** Every condition given must hold:
+- `url`, `host` and `path` take globs (`*.example.com`, `/v1/*`) or `re:<regex>`;
+- `methods`, `headers`, `query` and `bodyContains`;
+- on the response side, `status` (`404`, `4xx`, `>=400`, `500-599`) and `contentType`.
 
-**Match.** Every condition given must hold: `url`, `host`, `path` (globs such as `*.example.com` or
-`/v1/*`, or `re:<regex>`), `methods`, `headers`, `query`, `bodyContains`, and on the response side
-`status` (`404`, `4xx`, `>=400`, `500-599`) and `contentType`.
-
-| Action | Before sending | On the response |
+| Action | Request | Response |
 | --- | :-: | :-: |
 | `delay {ms, msMax?}`, `throttle {bytesPerSecond}` | ✓ | ✓ |
-| `setHeader {name, value}`, `removeHeader {name}` | ✓ | ✓ |
-| `setQuery`, `removeQuery` | ✓ | |
-| `mapRemote {scheme?, host?, port?, path?}`, `replaceUrl {pattern, with}` | ✓ | |
+| `setHeader`, `removeHeader` | ✓ | ✓ |
+| `setQuery`, `removeQuery`, `mapRemote {scheme?, host?, port?, path?}`, `replaceUrl` | ✓ | |
 | `setBody {text \| json \| file}`, `replaceBody {pattern, with}`, `mergeJson {json}` | ✓ | ✓ |
-| `respond {status, headers?, text \| json \| file}`: answer without the server | ✓ | |
+| `respond {status, headers?, text \| json \| file}`: no server asked (101 on a WebSocket: a mock server) | ✓ | |
 | `setStatus {status}` | | ✓ |
 | `fail {kind: reset \| close \| timeout}` | ✓ | ✓ |
 | `script {code}` | ✓ | ✓ |
 
-A response body is held back only when a rule changes it (decoded from gzip or brotli first);
-rules that change only headers or the status keep the response streaming, so server-sent events
-still work.
+| WebSocket step (`messages`) | What it does |
+| --- | --- |
+| `direction: out \| in \| both`, `when: "text" \| "re:…"`, `on: open` | Which messages it takes (or once, as the socket opens) |
+| `replaceMessage {pattern, with}`, `setMessage {text \| json \| file}`, `mergeJson {json}` | Change the message |
+| `drop`, `delay {ms, msMax?}` | Lose it, or hold it |
+| `reply {text \| json}` | Answer the sender; the message goes no further |
+| `send {to, text \| json}` | One more message, to the client or the server |
+| `close {code?, reason?}` | Close both sides |
+| `script {code}` | `async (msg, ctx) => {}`: change `msg.text`, `msg.drop = true`, `ctx.send(to, …)`, `ctx.close(…)` |
 
-**Scripts.** `code` is the body of `async (req, res, ctx) => {}`, run in the proxy: before sending
-it can change `req.method`, `req.url`, `req.headers`, `req.body` or set
-`req.respond = { status, headers, body }`; on the response it can change `res.status`,
-`res.headers` and `res.body` (`req.json()` and `res.json()` parse the bodies). A script runs only
-once its SHA-256 is approved, so a rules file that came with a cloned repository cannot run code on
-your machine unasked: press **Allow script** in the Rules view. Scripts Claude adds through its tools
-are approved with them.
+**Bodies.** A response body is held back only when a rule changes it, so server-sent events keep streaming under header rules.
 
-**In the list,** a request a rule changed is marked `✎`; its detail says what each rule did, and
-the filter takes `is:modified` and `rule:<id>`.
+**Scripts.** A script runs only once its SHA-256 is approved. A rules file cloned with a repository cannot run code unasked; press **Allow script**. Scripts Claude adds through its tools are approved with them.
+
+**In the list.** A request a rule changed is marked `✎`, and its detail says what each rule did. Filter with `is:modified` or `rule:<id>`.
 
 ## Filter
 
-Terms separated by spaces must all hold, and a leading `-` negates a term. Free text matches a
-substring of the URL.
+Terms separated by spaces must all hold; a leading `-` negates one. Free text matches a substring of the URL.
 
 | Term | Matches |
 | --- | --- |
 | `method:POST`, `method:get,post` | the method |
 | `status:404`, `status:4xx`, `status:>=400`, `status:500-599` | the response status |
-| `host:api.example.com`, `host:*.example.com` | the host (a substring, or a glob) |
+| `host:api.example.com`, `host:*.example.com` | the host |
 | `path:/v1/login` | a substring of the path |
-| `type:json\|html\|xml\|js\|css\|img\|font\|media\|text\|form\|ws\|tunnel\|other` | the content type |
-| `is:error\|ok\|pending\|tunnel\|ws\|https\|rejected` | the state (`rejected`: the client refused the certificate) |
-| `client:192.168.1.20` | the client's address |
+| `type:json\|html\|xml\|js\|css\|img\|font\|media\|text\|form\|grpc\|ws\|tunnel\|other` | the content type |
+| `is:error\|ok\|pending\|tunnel\|ws\|https\|h2\|grpc\|rejected\|modified` | the state (`error` includes failed gRPC calls) |
+| `client:192.168.1.20`, `rule:slow-feed` | the client, a rule |
 
-For example, `host:*.api.com -type:img is:error`.
+## Tracked domains
 
-## Tools for Claude
+A phone talks to dozens of hosts. Turn on the tracking list and the proxy decrypts and records only your app's domains. Everything else passes through untouched and unrecorded.
 
-| Tool | What the model gets |
-| --- | --- |
-| `mcp__wirepane__list_requests({ filter?, limit? })` | The proxy's state and one line per request: id, method, status, URL, size, time, type, error. |
-| `mcp__wirepane__get_request({ id, max_body_chars? })` | One request in full: URL, status, timing, client, error, request and response headers, decoded bodies, what the rules did. |
-| `mcp__wirepane__track_domains({ add?, remove?, set?, enabled? })` | The session's tracked domains, and the untracked hosts the proxy has seen, busiest first. |
-| `mcp__wirepane__list_rules()` | The rules in order, on or off, what each does in words, errors, how many requests each changed. |
-| `mcp__wirepane__add_rule({ rule, position? })`, `update_rule({ id, changes?, enabled?, position? })`, `remove_rule({ id })` | Write the rules file; the proxy applies the change at once. |
+```
+/proxy track app.example.com *.example.com     track these (*.example.com covers example.com)
+/proxy untrack app.example.com                 stop tracking one
+/proxy untrack                                 every domain again
+```
 
-Ask things like *"list the failed requests to api.example.com and tell me what they have in
-common"* or *"compare request #12 with #14"*. **To prompt** in a request's detail starts such a
-question for you.
+The **Domains** view (`d`) shows the hosts that passed through, busiest first, each with a **track** button. Clients that connect to an address (the Android emulator) are tracked by the name in their TLS handshake.
+
+## One proxy for every session
+
+The first session that needs the proxy starts it detached; the others attach to it.
+
+- **What a session gets on attaching:** the requests recorded so far, the tracked domains, the hosts passed through, and the rules of its own project.
+- **Sessions share the proxy:**
+  - Each project's rules apply while its session is attached.
+  - The tracked domains are the proxy's.
+  - `/clear` and `--resume` keep everything in place.
+- **When it stops:**
+  - `/proxy stop` stops it for everyone and says how many other sessions it served.
+  - A session that ends only lets go; the last one out stops it.
+  - With every session gone, it waits 90 seconds, then puts the system proxy and Android devices back and exits.
+- **New settings:** a proxy of another version or with other settings is replaced once nobody uses it. `/proxy restart` replaces it at once.
+
+```
+/proxy            open the pane and start (or attach to) the proxy
+/proxy setup      set up a browser, iOS, Android, macOS or CLI client
+/proxy doctor     the doctor's findings, and the Health view
+/proxy rules      the rules
+/proxy track      the tracked domains
+/proxy export     write a HAR file (.claude/wirepane-<time>.har, or the path given)
+/proxy restart    restart the proxy
+/proxy stop       stop it (and point the system proxy and Android devices back)
+/proxy clear      clear this session's list
+/proxy status     one line about its state
+/proxy tree|list  the requests as a tree (host → path) or a list
+```
 
 ## Options
 
@@ -251,41 +276,41 @@ Set them in `/config`, or in `/plugin` → **Installed** → **wirepane** → **
 | Option | Default | |
 | --- | --- | --- |
 | Port | `8899` | |
-| Listen on | `local` | `lan` opens the proxy to phones on the network |
-| Hosts not to decrypt | `*.apple.com,*.icloud.com,*.mzstatic.com,*.apple-cloudkit.com` | tunnelled untouched |
+| Listen on | `local` | `lan` opens it to phones on the network (never to this Mac's localhost) |
+| Hosts not to decrypt | `*.apple.com,*.icloud.com,*.mzstatic.com,*.apple-cloudkit.com` | tunnelled untouched; hosts that refuse the certificate twice are added on their own |
+| Accept these upstream certificates | (none) | dev servers with self-signed certificates, by host |
+| Upstream proxy | (none) | an office's or a VPN's proxy every connection to a server goes through: `http://[user:password@]host:port`, `socks5://[user:password@]host:port`, or a PAC file as `pac+http://host/proxy.pac` |
+| Reach directly | (none) | hosts reached without the upstream proxy; this Mac's own addresses and `*.local` always are |
 | Requests kept | `2000` | |
 
 ## How it works
 
 ```
-Claude Code mod ──spawns──▶ node sidecar/proxy.mjs ◀── :8899 ── browser · simulator · phone
-      ▲                          │ JSON lines: one summary per request
-      │                          │ headers and bodies → ~/.claude/proxy-mod/flows/
-   pane · status line · tools    │ openssl → ~/.claude/proxy-mod/ca, certs
+session A ──spawns──▶ node sidecar/attach.mjs ─┐                         ┌── browser
+session B ──spawns──▶ node sidecar/attach.mjs ─┼─ events ─▶ node sidecar/proxy.mjs --daemon ◀── :8899 ── simulator
+   pane · tools · status line                  └─ commands ─▶ (one per Mac, detached)  └── phone · emulator
+                                                       │ headers, bodies, messages → ~/.claude/proxy-mod/flows/
+                                                       │ watchdog: puts the system proxy back if it is killed
 ```
 
-A mod runs sandboxed, with no sockets of its own, so the proxy is a small Node.js process the mod
-starts for the session. It terminates TLS with a certificate per host, signed by a CA made on your
-machine (RSA-2048, kept in `~/.claude/proxy-mod/ca`, the key readable by you only). Request
-summaries come back on stdout; headers and bodies stay on disk and are read only when you open a
-request or Claude asks for one. [docs/design.md](docs/design.md) has the details.
+A mod runs sandboxed, with no sockets of its own, so the proxy is a small Node.js process.
+
+- **TLS.** It terminates TLS with a certificate per host (397 days at most), signed by a CA made on your machine. ALPN gives each client HTTP/2 or HTTP/1.1 on its own, and each server too.
+- **What reaches the mod.** Request summaries stream to the mod as JSON lines. Headers, bodies, WebSocket messages and events stay on disk until the pane or Claude reads them.
+
+[docs/design.md](docs/design.md) has the details.
 
 ## What it runs and what it changes
 
-Wirepane sends nothing of its own anywhere: no telemetry, no update checks, no downloads. The only
-connections it makes are the ones it relays for the clients you point at it, to the servers those
-clients asked for. A request reaches Claude only when Claude calls one of the
-[tools](#tools-for-claude); what it reads then becomes part of the conversation, like a file Claude
-reads.
+Wirepane sends nothing of its own anywhere: no telemetry, no update checks, no downloads. It connects only to the servers the clients you point at it asked for. A request reaches Claude only when Claude calls a tool; what it reads then becomes part of the conversation, like a file Claude reads.
 
 While the proxy is on, it runs:
 
-- `node sidecar/proxy.mjs`, the proxy itself, on `127.0.0.1` (on the network too in `lan` mode),
-  stopped with `kill` when you stop the proxy or the session ends. It runs on the first Node from
-  the places under [Install](#install) that answers `--version` with 18 or newer.
-- `openssl`, to make the CA and a certificate for each host.
-- `route`, `networksetup` and `scutil`, to find this Mac's addresses and read the system proxy, and
-  `ps` and `lsof`, to tell Claude's own connections apart so that they are tunnelled, never decrypted.
+- **The proxy:** `node sidecar/proxy.mjs --daemon` on `127.0.0.1` (on the network too in `lan` mode). It is detached so other sessions can use it, and stops when the last session leaves.
+- **The session links:** `node sidecar/attach.mjs`, one per session, which passes the proxy's events to the mod.
+- **The watchdog:** `node sidecar/watchdog.mjs`, which puts the system proxy back if the proxy is killed.
+- **`openssl`:** makes the CA and the host certificates.
+- **System tools:** `route`, `networksetup` and `scutil` find this Mac's addresses and read the system proxy. `ps` and `lsof` tell Claude's own connections apart. The doctor uses `ps`, `lsof` and `adb` too.
 
 Only when you press the button for it:
 
@@ -295,73 +320,79 @@ Only when you press the button for it:
 | **macOS → Trust CA on this Mac** | `security add-trusted-cert`, which macOS asks you to confirm | The CA in your login keychain |
 | **iOS → Use**, **Boot & use** | `xcrun simctl`, `open -a Simulator` | The CA in that simulator's keychain |
 | **Browser → Open** | `open -na <browser>` with a profile of its own | Nothing outside `~/.claude/proxy-mod/browser` |
-| **Android → Start through the proxy** | `emulator -avd <name> -http-proxy …`, `adb` | Nothing: the proxy setting lasts for that run |
-| **Install Node.js**, shown when no Node was found | `brew install node`, then the proxy starts | Node.js from Homebrew |
-| **Download Node.js**, the same without Homebrew | `open https://nodejs.org/en/download` | Nothing |
-| **Android → proxy**, **Point USB phones at the proxy** | `adb shell settings put global http_proxy`, `adb reverse` | The device's proxy, put back by **Revert** and when the proxy stops |
+| **Android → Start through the proxy**, **Android → proxy**, **Point USB phones** | `emulator -http-proxy`, `adb shell settings put global http_proxy`, `adb reverse` | The device's proxy, put back by **Revert** and when the proxy stops |
+| **Health → Trust in all apps** (Android) | `adb root`, `adb push`, a shell script that mounts a tmpfs over the system CA store | The emulator's system CAs, until it reboots |
+| **Health → Accept its certificate**, **Never decrypt it** | Nothing | The plugin option, which restarts the proxy |
+| **Install Node.js**, shown when no Node was found | `brew install node` | Node.js from Homebrew |
 
 Files it writes:
 
-- `~/.claude/proxy-mod/ca` and `certs`: the CA (RSA-2048, the key readable by you only) and the
-  certificates made from it.
-- `~/.claude/proxy-mod/flows/<session>`: the headers and bodies of recorded requests. They can hold
-  the passwords, tokens and personal data of the apps you debug. A session's folder is deleted two
-  days after its last use.
-- `~/.claude/proxy-mod/sessions`, `trusted-scripts.json` and `system-proxy-backup.json`: each
-  session's tracked domains, the rule scripts you approved, and the system proxy settings to put
-  back.
-- `<project>/.claude/proxy-rules.json`, once you or Claude add a rule.
+- **`ca`, `certs`:** the CA (RSA-2048, the key readable by you only) and the certificates made from it.
+- **`flows/<run>`:** the headers, bodies, WebSocket messages and events of recorded requests. They can hold the passwords, tokens and personal data of the apps you debug. A run's folder is deleted two days after its last use.
+- **`sidecar.json`, `sidecar.log`:** where the running proxy is, and its log.
+- **`tracking.json`, `trusted-scripts.json`:** the tracked domains, and the rule scripts you approved.
+- **`system-proxy-backup.json`, `android-proxied.json`:** what to put back.
+- **`<project>/.claude/proxy-rules.json`:** written once you or Claude add a rule.
+
+All of these live in `~/.claude/proxy-mod` except the rules file, which lives in your project.
 
 ## Uninstall
 
-1. `/proxy stop` puts back the system proxy and the Android devices it pointed here.
-2. `/plugin uninstall wirepane@wirepane`, or **Uninstall** in `/plugin` → **Installed**.
-3. Remove the CA where you trusted it: in Keychain Access on the Mac (search for *Wirepane CA*),
-   under **Settings → General → VPN & Device Management** on an iPhone, and under user
-   credentials on Android.
-4. `rm -rf ~/.claude/proxy-mod` deletes the CA, the recorded requests and the browser profiles.
+1. Run `/proxy stop`. It puts back the system proxy and the Android devices, and stops the shared proxy.
+2. Run `/plugin uninstall wirepane@wirepane`.
+3. Remove the CA where you trusted it:
+   - Keychain Access on the Mac (search for *Wirepane CA*);
+   - **Settings → General → VPN & Device Management** on an iPhone;
+   - user credentials on Android.
+4. Run `rm -rf ~/.claude/proxy-mod` to delete the CA, the recordings and the browser profiles.
 
 ## FAQ
 
-**Is it a replacement for Proxyman, Charles or mitmproxy?**
-For everyday "what did my app send and what came back" debugging, yes, without leaving Claude Code.
-Rules cover rewriting, mocking and throttling; there are no interactive breakpoints, HTTP/2 or gRPC.
+**Is it a replacement for Proxyman, Charles, mitmproxy or HTTP Toolkit?**
+For "what did my app send, what came back, and why does it fail", yes, without leaving Claude Code. That covers HTTP/2, gRPC, WebSockets and SSE, with rules, mocks, replays and diffs, and it works behind an office proxy. What it does not have is in the [limits](#limits). Proxyman and HTTP Toolkit have MCP servers too. Wirepane is built around the agent: the doctor, the waiting, search and diff tools, the context budget, and the skills that fix the app's own code.
 
 **Do I have to install the certificate on my Mac?**
-Not for the separate browser: it trusts the proxy by SPKI hash. Safari, native macOS apps and the
-iOS Simulator need the CA trusted; the setup tabs give the commands.
+Not for the separate browser, which trusts the proxy by SPKI hash. Safari, native Mac apps and the iOS Simulator need the CA. One press each.
 
 **Why do some requests show `CERT`?**
-The client refused the proxy's certificate. Either its CA is not trusted yet (finish the setup
-steps), or the app pins its certificates; add such hosts to *Hosts not to decrypt*.
+The client refused the proxy's certificate. Either it does not trust the CA yet, or the app pins its certificates. `diagnose` tells which. A pinned host passes through after two refusals, so the app keeps working.
+
+**I see nothing from my Flutter (or Go, or Unity) app.**
+Some runtimes ignore the system proxy. The troubleshooting skill has the few lines that fix it in a debug build.
 
 **Does my traffic leave my machine?**
-Only for the servers it was going to anyway. The proxy listens on `127.0.0.1` unless you choose
-`lan`, and recorded requests stay in `~/.claude/proxy-mod`. Claude reads a request only when it
-calls the tools, and then that request is part of the conversation.
+Only to the servers it was going to anyway. Recordings stay in `~/.claude/proxy-mod`. Claude reads a request only through a tool.
 
 **Does it capture Claude Code's own traffic, or the commands Claude runs?**
-No. It captures clients you point at it.
+No. It captures the clients you point at it.
 
 ## Limits
 
-- Clients are offered HTTP/1.1 only, so gRPC over HTTP/2 does not get through.
-- WebSocket frames are not decoded; an upgrade shows as one row.
-- The system proxy is put back on stop, at the session's end and when Claude Code quits; only a
-  proxy killed with `kill -9` can leave it on (System Settings → Network → Details → Proxies).
-- Rule scripts run in Node's `vm` module inside the proxy: approve only code you would run yourself.
-- Mods are an early-access Claude Code API.
+- **HTTP/3 (QUIC)** is UDP and never meets an HTTP proxy. Chrome drops to HTTP/2 behind one; an app that forces QUIC is not seen.
+- **h2c:** plain-text HTTP/2 with prior knowledge is not supported. HTTP/2 over TLS and HTTP/1.1 upgrades are.
+- **Breakpoints:** a request cannot be paused for hand editing. Rules, `replay_request` and scripts cover most of that.
+- **Protobuf** is decoded without a schema: field numbers, not names.
+- **WebSocket compression:** permessage-deflate is taken out of the client's offer. A server that insists on it may refuse; a compressed message passes on undecoded.
+- **Upstream proxy:** HTTP (Basic credentials), SOCKS5 and PAC files work; NTLM and Kerberos sign-in do not.
+- **Android system CA:**
+  - It needs an emulator image that allows root: Google APIs, not Google Play.
+  - It lasts until a reboot.
+  - Android 17 asks for Certificate Transparency on system CAs, which Wirepane's certificates do not carry.
+  - Chrome on Android trusts a user CA anyway.
+- **Pinned apps:** someone else's app that pins its certificates stays encrypted; it is passed through.
+- **Rule scripts** run in Node's `vm` module: approve only code you would run yourself.
+- **Platform:** macOS only, on an early-access Claude Code API (mods).
 
 ## Development
 
 ```sh
-node --test sidecar/proxy.spec.mjs    # the proxy, against local upstreams, driven by curl
-claude plugin test .                  # the logic, the pane (terminal and desktop) and the tools
 claude plugin validate --strict .
+claude plugin test .                         # the mod: logic, the pane (terminal and desktop), the tools
+node --test --test-force-exit sidecar/*.spec.mjs   # the proxy against local HTTP/1.1, HTTP/2, gRPC and WebSocket upstreams
 ```
 
-To run a working copy: `claude --plugin-dir /path/to/wirepane`.
+To run a working copy, use `claude --plugin-dir /path/to/wirepane`.
 
 ## License
 
-[MIT](LICENSE). Not affiliated with Anthropic, Proxyman, Charles or mitmproxy.
+[MIT](LICENSE). Not affiliated with Anthropic, Proxyman, Charles, mitmproxy or HTTP Toolkit.

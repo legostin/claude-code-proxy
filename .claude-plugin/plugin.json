@@ -1,8 +1,8 @@
 {
   "name": "wirepane",
   "displayName": "Wirepane",
-  "version": "0.7.5",
-  "description": "An HTTPS debugging proxy inside Claude Code on macOS: intercepts browser, iOS and Android traffic with its own CA, setup guides, a filterable request list and tools for Claude.",
+  "version": "0.8.0",
+  "description": "The debugging proxy Claude can read, inside Claude Code on macOS: HTTPS, HTTP/2, gRPC, WebSockets and server-sent events from the browser, iOS and Android; one-press device setup; rules and mock servers; a doctor that fixes what is in the way; 15 tools and 3 skills for Claude.",
   "author": {
     "name": "Legostin Vyacheslav",
     "url": "https://github.com/legostin"
@@ -12,17 +12,25 @@
   "license": "MIT",
   "keywords": [
     "android",
+    "charles-alternative",
     "claude-code",
     "claude-code-mod",
     "debugging",
+    "grpc",
+    "har",
+    "http-toolkit-alternative",
+    "http2",
     "https-proxy",
     "ios",
     "mitm",
+    "mitmproxy-alternative",
     "mock-server",
     "network",
     "proxy",
     "proxyman-alternative",
-    "rewrite-rules"
+    "rewrite-rules",
+    "server-sent-events",
+    "websocket"
   ],
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -45,7 +53,7 @@
     "noDecrypt": {
       "type": "string",
       "title": "Hosts not to decrypt",
-      "description": "Comma-separated hosts tunnelled untouched (pinned services); *.example.com covers subdomains.",
+      "description": "Comma-separated hosts tunnelled untouched (pinned services); *.example.com covers subdomains. Hosts that refuse the certificate twice are passed through on their own.",
       "default": "*.apple.com,*.icloud.com,*.mzstatic.com,*.apple-cloudkit.com"
     },
     "maxFlows": {
@@ -53,6 +61,24 @@
       "title": "Requests kept",
       "description": "How many of the latest requests the list keeps.",
       "default": 2000
+    },
+    "insecureHosts": {
+      "type": "string",
+      "title": "Accept these upstream certificates",
+      "description": "Comma-separated hosts whose own certificate is not checked (dev servers with self-signed ones); *.example.com covers subdomains.",
+      "default": ""
+    },
+    "upstreamProxy": {
+      "type": "string",
+      "title": "Upstream proxy",
+      "description": "An office's or a VPN's proxy every connection to a server goes through: http://[user:password@]host:port, socks5://[user:password@]host:port, or a PAC file as pac+http://host/proxy.pac. Empty: servers are reached directly.",
+      "default": ""
+    },
+    "upstreamBypass": {
+      "type": "string",
+      "title": "Reach directly",
+      "description": "Comma-separated hosts reached without the upstream proxy (this Mac's own addresses always are); *.example.com covers subdomains.",
+      "default": ""
     }
   }
 }

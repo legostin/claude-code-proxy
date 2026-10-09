@@ -19,6 +19,18 @@ export type ProxyFlow = {
   note?: string
   /** The ids of the rules that changed this exchange, in the order they acted. */
   rules?: string[]
+  /** The client's protocol: '2' for HTTP/2, else '1.1' or '1.0'. */
+  httpVersion?: string
+  /** A gRPC call's status from its trailers (0 is OK), and its message. */
+  grpcStatus?: number
+  grpcMessage?: string
+  /** A WebSocket's text and binary messages so far: client to server, server to client. */
+  wsOut?: number
+  wsIn?: number
+  /** A text/event-stream response's events so far. */
+  sseEvents?: number
+  /** The request this one sent again (replay_request). */
+  replayOf?: number | null
 }
 
 export type ProxyCa = {
@@ -49,6 +61,12 @@ export type ProxyStatus = {
   runDir: string | null
   pid: number | null
   ca: ProxyCa | null
+  /** The sidecar's token for its control commands (live WebSockets). */
+  control?: { token: string } | null
+  /** One proxy for every session on this Mac (it outlives the session that started it). */
+  isShared?: boolean
+  /** The running proxy's Wirepane version (another session may have started an older one). */
+  proxyVersion?: string
   error: string | null
   /** No Node 18 or newer was found to run the proxy: the pane offers to install it. */
   isNodeMissing?: boolean
@@ -98,13 +116,35 @@ export type ProxySystemProxy = { isOn: boolean; service: string | null; isOurs: 
 
 export type ProxySetupTab = 'browser' | 'ios' | 'android' | 'cli'
 
+export type ProxySession = { session: string; project: string; since: number }
+
+/** What the doctor found, and the proxy process as it answered. */
+export type ProxyHealth = {
+  checkedAt: number | null
+  findings: { level: 'ok' | 'info' | 'warn' | 'fail'; title: string; detail?: string; fix?: string; label?: string; action?: unknown }[]
+  process: {
+    pid: number
+    version: string
+    uptimeMs: number
+    rss: number
+    flows: number
+    diskBytes: number
+    sessions: ProxySession[]
+    websockets: number
+    pinned: number
+    isShared: boolean
+  } | null
+}
+
 export type ProxyView = {
-  mode: 'list' | 'detail' | 'setup' | 'rules' | 'domains'
+  mode: 'list' | 'detail' | 'setup' | 'rules' | 'domains' | 'health'
   selectedId: number | null
   setupTab: ProxySetupTab
   layout?: 'list' | 'tree'
   /** On the iOS and Android tabs: the simulator/emulator, or a real phone. */
   device?: 'virtual' | 'real'
+  /** In the rules view: the rule whose ✕ was pressed, waiting for Remove or Keep. */
+  removing?: string | null
 }
 
 declare module 'claude-code' {
@@ -133,6 +173,12 @@ declare module 'claude-code' {
       macTrust: 'unknown' | 'trusted' | 'untrusted'
       /** This mod's version, from its plugin.json. */
       version: string
+      /** The Claude Code sessions attached to the one shared proxy, this one among them. */
+      sessions: ProxySession[]
+      /** Hosts passed through untouched after refusing the certificate, per client. */
+      pinned: { client: string | null; host: string }[]
+      /** The doctor's last findings, for the Health view. */
+      health: ProxyHealth
     }
   }
 }

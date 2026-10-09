@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { describeRule, matchesRequest, matchesResponse, parseRules, ruleErrors, statusMatcher } from '../shared/rules.mjs'
+import { actsOnHttp, describeRule, matchesRequest, matchesResponse, parseRules, ruleErrors, statusMatcher, stepTakes } from '../shared/rules.mjs'
 
 const request = (path: string, extra: Record<string, unknown> = {}) => ({
   method: 'GET',
@@ -74,5 +74,59 @@ describe('rules', () => {
       'GET · host api.example.com · path /v1/feed* → before sending: wait 1.5 s to 3 s, set header X-Debug: 1; on the response: set status 503, reset the connection; then stop',
     )
     expect(describeRule({ id: 'r', request: [{ type: 'mapRemote', host: 'localhost', port: 3000 }] })).toBe('every request → before sending: send to localhost:3000')
+  })
+})
+
+describe('WebSocket rules', () => {
+  const chat = {
+    id: 'chat',
+    match: { path: '/chat' },
+    messages: [
+      { type: 'replaceMessage', direction: 'out', pattern: 'secret', with: '[hidden]' },
+      { type: 'reply', when: '"type":"ping"', json: { type: 'pong' } },
+      { type: 'send', on: 'open', to: 'client', text: 'welcome' },
+      { type: 'close', direction: 'in', when: 're:^bye', code: 4000, reason: 'done' },
+    ],
+  }
+
+  test('message steps validate, and a rule of messages alone is whole', () => {
+    expect(ruleErrors(chat)).toEqual([])
+    expect(actsOnHttp(chat)).toBe(false)
+    const broken = ruleErrors({
+      id: 'broken',
+      messages: [
+        { type: 'send', text: 'x' },
+        { type: 'drop', direction: 'sideways' },
+        { type: 'reply', on: 'open', text: 'x' },
+        { type: 'close', code: 99 },
+        { type: 'setBody', text: 'x' },
+        { type: 'drop', when: 're:(' },
+      ],
+    }).join('\n')
+    expect(broken).toContain('to must be client or server')
+    expect(broken).toContain('direction must be out (client to server), in (server to client) or both')
+    expect(broken).toContain('on open takes send, close, delay, script only')
+    expect(broken).toContain('code must be 1000 to 4999')
+    expect(broken).toContain('type must be one of replaceMessage')
+    expect(broken).toContain('when')
+  })
+
+  test('a step takes the messages its direction and its when name', () => {
+    const [replace, reply, open, close] = chat.messages
+    expect(stepTakes(replace!, { direction: 'out', text: 'a secret' })).toBe(true)
+    expect(stepTakes(replace!, { direction: 'in', text: 'a secret' })).toBe(false)
+    expect(stepTakes(reply!, { direction: 'in', text: '{"type":"ping"}' })).toBe(true)
+    expect(stepTakes(reply!, { direction: 'out', text: '{"type":"pong"}' })).toBe(false)
+    expect(stepTakes(reply!, { direction: 'out', text: null })).toBe(false)
+    expect(stepTakes(open!, { direction: 'out', text: 'anything' })).toBe(false)
+    expect(stepTakes(close!, { direction: 'in', text: 'bye now' })).toBe(true)
+  })
+
+  test('reads as one line', () => {
+    expect(describeRule(chat)).toBe(
+      'path /chat → WebSocket messages: client → server: replace secret with "[hidden]"; ' +
+        'each message holding ""type":"ping"": reply JSON {"type":"pong"} instead of passing it on; ' +
+        'on open: send "welcome" to the client; server → client matching re:^bye: close the WebSocket (4000 "done")',
+    )
   })
 })

@@ -14,6 +14,94 @@ own traffic, switching the macOS system proxy automatically, HTTP/2 and gRPC,
 decoding WebSocket frames, breakpoints and rewrites, a QR code. (0.2 added
 the QR code, 0.3 rewrite rules.)
 
+## 0.8 (2026-10-09): every protocol, one proxy for every session, a doctor
+
+What follows this section describes 0.1-0.7. Where 0.8 differs, this section wins.
+
+**Processes.**
+
+```
+session ──$.process.spawn──▶ attach.mjs ── GET /__wirepane/<token>/events ──▶ proxy.mjs --daemon ◀── :8899 ── clients
+session ──$.process.spawn──▶ attach.mjs ──┘   (JSON lines: what it holds, then live)   │ registry <data>/sidecar.json
+                                                                                        └▶ watchdog.mjs (system proxy back after a kill -9)
+```
+
+- `attach.mjs` finds the daemon in the registry and asks it `info`. When there is none, it starts the daemon detached, under `<data>/sidecar.lock`, and waits for it to answer. A daemon of another version or other settings, with no session attached, is replaced.
+- The daemon sends an attaching session a `ready` event, then:
+  - what it holds: the last 2000 flows, the tracked domains, the skipped hosts, the network, the rules events, the pinned hosts;
+  - then every event as it comes.
+- With no session attached for `--linger-ms` (90 s), the daemon puts back the system proxy and the Android devices listed in `<data>/android-proxied.json`, then exits.
+- Rules come one file per attached session's project. A rule keeps its own project root (`__root`) for `file` bodies.
+- The tracked domains are the proxy's: `<data>/tracking.json`, written by any session. A session that starts the daemon writes its own list there.
+- The mod's session end kills only its `attach.mjs` when others are attached; the last session stops the daemon. `/proxy stop` stops it for everyone.
+
+**Control** (`POST /__wirepane/<token>/<command>`, local clients only, the token in `ready`):
+
+- `info`;
+- `stop`;
+- `events`;
+- `flows/wait {after, until, timeoutMs}`: a long poll, so the mod's `wait_for_request` spends no hook budget;
+- `flows/clear`;
+- `tracking/set`;
+- `ws/send`, `ws/close`, `ws/list`;
+- `pinned/list`, `pinned/clear`.
+
+The mod reaches these with `curl` through `$.process.run`.
+
+**Protocols.**
+
+- **HTTP/2.** The decrypted socket offers ALPN `h2, http/1.1`. An h2 client gets an `http2.createServer()` of its own per connection.
+  - A hand-made server-side `TLSSocket` never clears `secureConnecting`, which would make an HTTP/2 session wait forever, so it is cleared by hand.
+  - Pseudo-headers stay out of the pairs; `:authority` becomes `host`.
+  - Upstream, an h2 client gets an h2 session per origin and client locality when ALPN says the server speaks h2 (learned once per origin), and HTTP/1.1 otherwise.
+  - Trailers are forwarded to h2 clients and recorded (`resTrailers`). `te: trailers` is kept for gRPC.
+  - A rule's `fail: reset` resets the stream; `close` ends the session.
+- **gRPC and protobuf.** `sidecar/protobuf.mjs` splits the 5-byte frames (gunzipping compressed ones, reading gRPC-Web's trailer frame and its base64 text form) and decodes protobuf without a schema. The result is written beside the body as `<id>.<side>.view`. `grpcStatus` and `grpcMessage` come from the trailers.
+- **WebSockets** (`sidecar/websocket.mjs`).
+  - The upgrade's request rules apply. `respond {status: 101}` makes Wirepane the server: it computes `Sec-WebSocket-Accept`, echoes the first subprotocol, and answers pings and closes.
+  - permessage-deflate is taken out of the offer.
+  - The client gets the server's own 101 head.
+  - Frames are read both ways. Without a message rule each frame goes on at once as it came; with one, data frames are held until the message is whole, the steps apply, and the message goes on as it came or encoded anew (masked toward the server).
+  - Control frames pass at once; closes queue behind held messages.
+  - Unreadable bytes switch that direction to a raw copy.
+  - The record is `<id>.ws.jsonl`: `{t, dir, op, size, text | b64, code?, note?, was?}`, capped at 20000 lines. Messages are cut at 64 KB, binary at 4 KB of base64.
+  - `wsOut` and `wsIn` count data messages; flow updates are throttled to two a second.
+- **Server-sent events** (`sidecar/sse.mjs`). `text/event-stream` responses without content encoding are parsed as they stream, into `<id>.sse.jsonl` `{t, event?, id?, data, retry?}`, with `sseEvents` on the flow.
+- **Plain HTTP inside CONNECT.** A browser's `ws://` arrives that way. It goes to the inner HTTP/1.1 server with scheme `http`, so it is recorded like any request.
+
+**Certificate refusals.** Keyed by client and host:
+- an alert counts 1;
+- a handshake closed within 1.5 s with no request counts ½ (OkHttp's pin mismatch);
+- at 2 the host is passed through (`pinned`, tunnel rows with note `pinned`).
+
+An entry made while that client had accepted no handshake at all is blind: the client lacks the CA, it does not pin. Blind entries go the moment the client accepts one. Handshakes the client resets (`ECONNRESET`: a browser dropping a preconnect) get no row.
+
+**Upstream certificates.** They are checked unless the host is in `--insecure-hosts`, where an agent and sessions of their own skip the check.
+
+**Upstream proxy** (`sidecar/upstream.mjs`, `--upstream-bypass`). `--upstream-proxy` takes three forms:
+- `http://[user:pass@]host:port`: CONNECT, and plain HTTP in absolute form;
+- `socks5://[user:pass@]host:port`: RFC 1928 and 1929, names resolved by the proxy;
+- `pac+URL`: the file's `FindProxyForURL` runs in a `vm` sandbox with the standard helpers. DNS goes in two passes: names it asked for are looked up, then it runs again. The routes it answers are tried in order, `DIRECT` included. Every connection to a server goes through it, except this Mac's own addresses (`localhost`, `127.*`, `::1`, `*.local`) and the bypassed hosts:
+- HTTPS agents: `createConnection` that CONNECTs first, then TLS;
+- HTTP/2 sessions;
+- plain HTTP, in absolute form with `Proxy-Authorization`;
+- recorded and quiet tunnels (`dial`);
+- WebSocket and raw upgrades (`openServerSocket`).
+
+A refusal (a 407 says it wants credentials) is the flow's error, code `EUPSTREAMPROXY`. The doctor offers the proxy the network service had before Wirepane (from the backup, or the system proxy now) as the upstream.
+
+**The mod.**
+- **New modules:**
+  - `hooks/model.ts`: budgets, URL cutting, JSON for the model, `jsonPath`.
+  - `hooks/diff.ts`: `diffRequests`.
+  - `hooks/har.ts`: HAR 1.2, with Chrome's `_webSocketMessages`.
+  - `hooks/doctor.ts`: findings from facts; the facts are gathered in `register.tsx`.
+  - `hooks/android.ts`: the system CA script.
+- **New tools:** `search_requests`, `wait_for_request`, `replay_request` (curl through the proxy with `x-wirepane-replay: <id>`, which the proxy strips and records as `replayOf`), `diff_requests`, `export_har`, `send_ws_message`, `close_websocket`, `diagnose`.
+- **Changed tools:** `list_requests` takes `since` and caps at 200. `get_request` takes `part`, `max_chars` and `json_path`.
+- **The pane:** the Health view (`h`) with the findings, a fix button where Wirepane can do it, and the proxy process (pid, uptime, memory, disk, sessions, open WebSockets, pinned hosts). Commands `/proxy doctor`, `restart` and `export`.
+- **Skills:** `skills/wirepane-debugging`, `skills/wirepane-troubleshooting` and `skills/wirepane-rules`. `sidecar/skills.spec.mjs` validates every rule recipe in them.
+
 ## Architecture
 
 ```
@@ -188,7 +276,7 @@ tail of its stderr in the pane, [Start] again), the upstream is unreachable
   carries `ruleLog`, and headers and bodies as the server and the client
   got them. The list marks such rows `✎`; the filter takes `is:modified`
   and `rule:<id>`.
-- **Mod.** The Rules view (`/proxy rules`, `r`): order, on/off, ↑ ↓,
+- **Mod.** The Rules view (`/proxy rules`, `r`): order, on/off, ↑ ↓, ✕ (asks once more),
   description, the generated summary, errors, hit counts, Allow script.
   Edits rewrite the file through `$.fs.write`. Tools: `list_rules`,
   `add_rule`, `update_rule`, `remove_rule`; the rule's JSON schema rides

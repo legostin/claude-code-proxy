@@ -19,6 +19,7 @@ const READY = {
   ],
   pid: 4242,
   runDir: RUN_DIR,
+  control: { token: 'tok3n' },
   ca: {
     path: CA_PATH,
     subject: 'CN=Wirepane CA (tester), O=Wirepane',
@@ -52,6 +53,61 @@ function flow(id: number, extra: Partial<ProxyFlow> = {}): ProxyFlow {
 }
 
 let ruledFlow = false
+// what the fake sidecar's flows/wait answers
+let waitFlows: ProxyFlow[] = []
+// another session shares the proxy
+let withOtherSession = false
+// streams: a WebSocket, a gRPC call and server-sent events join the flows the fake sidecar sends
+let withStreams = false
+const STREAM_FLOWS = [
+  flow(4, { kind: 'ws', path: '/chat', status: 101, contentType: null, resSize: 120, wsOut: 2, wsIn: 1, state: 'receiving', durationMs: null }),
+  flow(5, { method: 'POST', path: '/pkg.Greeter/Say', contentType: 'application/grpc', httpVersion: '2', grpcStatus: 5, grpcMessage: 'no such greeter' }),
+  flow(6, { path: '/v1/stream', contentType: 'text/event-stream', sseEvents: 2 }),
+]
+const STREAM_FILES: Record<string, string> = {
+  [`${RUN_DIR}/4.json`]: JSON.stringify({
+    ...STREAM_FLOWS[0],
+    url: 'wss://api.example.com/chat',
+    reqHeaders: [['Upgrade', 'websocket']],
+    resHeaders: [['Upgrade', 'websocket']],
+    req: null,
+    res: null,
+    ws: { file: `${RUN_DIR}/4.ws.jsonl`, count: 3, close: null },
+  }),
+  [`${RUN_DIR}/4.ws.jsonl`]: [
+    { t: 0, dir: 'out', op: 'text', size: 5, text: 'hello' },
+    { t: 120, dir: 'in', op: 'text', size: 12, text: 'echo: hello' },
+    { t: 1500, dir: 'out', op: 'text', size: 15, text: '{"type":"ping"}', note: 'answered by a rule' },
+  ]
+    .map(line => JSON.stringify(line))
+    .join('\n'),
+  [`${RUN_DIR}/5.json`]: JSON.stringify({
+    ...STREAM_FLOWS[1],
+    url: 'https://api.example.com/pkg.Greeter/Say',
+    upstreamHttpVersion: '2',
+    reqHeaders: [['content-type', 'application/grpc']],
+    resHeaders: [['content-type', 'application/grpc']],
+    resTrailers: [['grpc-status', '5'], ['grpc-message', 'no such greeter']],
+    req: null,
+    res: { file: `${RUN_DIR}/5.res`, size: 9, stored: 9, isTruncated: false, encoding: null, isDecoded: false, view: `${RUN_DIR}/5.res.view`, viewKind: 'grpc' },
+  }),
+  [`${RUN_DIR}/5.res.view`]: 'message 1 (4 bytes)\n1: "hi"',
+  [`${RUN_DIR}/6.json`]: JSON.stringify({
+    ...STREAM_FLOWS[2],
+    url: 'https://api.example.com/v1/stream',
+    reqHeaders: [],
+    resHeaders: [['content-type', 'text/event-stream']],
+    req: null,
+    res: null,
+    sse: { file: `${RUN_DIR}/6.sse.jsonl`, count: 2 },
+  }),
+  [`${RUN_DIR}/6.sse.jsonl`]: [
+    { t: 10, event: 'start', data: '{"step":1}' },
+    { t: 900, data: '[DONE]' },
+  ]
+    .map(line => JSON.stringify(line))
+    .join('\n'),
+}
 const LOGIN = flow(2, { method: 'POST', path: '/v1/login', status: 401, reqSize: 17 })
 const FLOWS = [flow(1), LOGIN, flow(3, { host: 'cdn.example.com', path: '/a.png', contentType: 'image/png' })]
 
@@ -93,9 +149,13 @@ function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string
   mock.store(on)
   on('process.spawn', async function* ($, e) {
     spawned.push(e.argv)
-    const sent = isQuiet ? [] : FLOWS.map(f => (ruledFlow && f.id === 2 ? { ...f, rules: ['mock-login'] } : f))
+    // a restart spawns again once the old run ended: the new one runs until killed in turn
+    isKilled = false
+    const sent = isQuiet ? [] : [...FLOWS, ...(withStreams ? STREAM_FLOWS : [])].map(f => (ruledFlow && f.id === 2 ? { ...f, rules: ['mock-login'] } : f))
     const skipped = { t: 'skipped', hosts: { 'gateway.icloud.com': 12, 'api.kolesa.kz': 3 } }
-    const text = [READY, ...sent.map(f => ({ t: 'flow', flow: f })), skipped].map(event => `${JSON.stringify(event)}\n`).join('')
+    const attached = { t: 'attached', pid: 777, proxyPid: 4242, isStarted: !withOtherSession }
+    const sessions = { t: 'sessions', sessions: [{ session: 'session', project: ROOT, since: 0 }, ...(withOtherSession ? [{ session: 'other', project: '/work/other-app', since: 0 }] : [])] }
+    const text = [attached, { ...READY, isShared: true }, sessions, ...sent.map(f => ({ t: 'flow', flow: f })), skipped].map(event => `${JSON.stringify(event)}\n`).join('')
     // cut mid-line, as a pipe may
     yield { stream: 'stdout' as const, text: text.slice(0, 50) }
     yield { stream: 'stdout' as const, text: text.slice(50) }
@@ -132,6 +192,19 @@ function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string
       return ok(ran.some(command => command.startsWith('security add-trusted-cert')) ? '...certificate verification successful.\n' : 'Cert Verify Result: CSSMERR_TP_NOT_TRUSTED\n')
     }
     if (line === 'adb devices') return ok('List of devices attached\nemulator-5554\tdevice\n')
+    if (e.argv[0] === 'curl' && line.includes('/__wirepane/tok3n/flows/wait')) return ok(JSON.stringify({ flows: waitFlows }))
+    if (e.argv[0] === 'curl' && line.includes('/__wirepane/tok3n/info')) {
+      return ok(JSON.stringify({
+        pid: 4242, version: '0.8.0', isShared: true, uptimeMs: 3_900_000, memory: { rss: 52_428_800 }, flows: 3, diskBytes: 2_097_152, websockets: 0, pinned: 0,
+        sessions: [{ session: 'session', project: ROOT, since: 0 }, ...(withOtherSession ? [{ session: 'other', project: '/work/other-app', since: 0 }] : [])],
+      }))
+    }
+    if (line === 'ps -axo comm=') return ok('/sbin/launchd\n/Applications/Proxyman.app/Contents/MacOS/Proxyman\n')
+    if (e.argv[0] === 'curl' && line.includes('x-wirepane-replay:')) return ok('')
+    if (e.argv[0] === 'curl' && line.includes('/__wirepane/tok3n/ws/send')) {
+      const body = JSON.parse(e.init?.stdin ?? '{}') as { id: number }
+      return ok(body.id === 4 ? '{"ok":true}' : `{"error":"WebSocket #${body.id} is not open","open":[4]}`)
+    }
     if (line === 'adb -s emulator-5554 emu avd name') return ok('Pixel_8_API_35\nOK\n')
     return ok('')
   })
@@ -152,7 +225,9 @@ function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string
     const names = node.dirs?.[e.path]
     return names ? { value: names.map(name => ({ name, kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false })) } : { deny: `ENOENT: ${e.path}` }
   })
-  on('session.id', async () => ({ value: 'session' }))
+  // what a /clear changes: the process goes on under another session id
+  const session = { id: 'session' }
+  on('session.id', async () => ({ value: session.id }))
   const configSets: [string, unknown][] = []
   on('config.set', async ($, e) => {
     configSets.push([e.key, e.value])
@@ -163,7 +238,7 @@ function fakeMachine(on: On, clock: MockClock, extraFiles: Record<string, string
     statuses.push(e.text)
     return { value: undefined }
   })
-  return { spawned, killed, statuses, configSets, files, ran }
+  return { spawned, killed, statuses, configSets, files, ran, session }
 }
 
 // Each act waits for the sidecar loop the start left running to go quiet.
@@ -197,7 +272,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(machine.spawned).toHaveLength(1)
     const argv = machine.spawned[0]!
     expect(argv[0]).toBe('node')
-    expect(argv[1]).toMatch(/sidecar\/proxy\.mjs$/)
+    expect(argv[1]).toMatch(/sidecar\/attach\.mjs$/)
+    expect(argv[argv.indexOf('--session') + 1]).toBe('session')
+    expect(argv[argv.indexOf('--rules') + 1]).toBe(RULES_FILE)
     expect(argv).toContain('--no-decrypt')
     expect(argv[argv.indexOf('--data') + 1]).toBe(`${HOME}/.claude/proxy-mod`)
 
@@ -419,6 +496,19 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ key: 'rule-trust:scripted' })).toBeUndefined()
     expect(await ui.find({ text: /4 rules, 2 on/ })).toBeDefined()
 
+    // removing asks once more; Keep leaves the rule in the file
+    await ui.press({ key: 'rule-remove:broken' })
+    expect(await ui.find({ key: 'rule-remove-confirm:broken' })).toBeDefined()
+    await ui.press({ key: 'rule-remove-keep:broken' })
+    expect(await ui.find({ key: 'rule-remove-confirm:broken' })).toBeUndefined()
+    expect((JSON.parse(machine.files[RULES_FILE]!) as typeof RULES).rules).toHaveLength(4)
+    await ui.press({ key: 'rule-remove:broken' })
+    await ui.press({ key: 'rule-remove-confirm:broken' })
+    const removed = JSON.parse(machine.files[RULES_FILE]!) as typeof RULES
+    expect(removed.rules.map(rule => rule.id)).toEqual(['mock-login', 'slow-feed', 'scripted'])
+    expect(await ui.find({ text: /3 rules, 2 on/ })).toBeDefined()
+    expect(await ui.find({ text: 'Removed broken.' })).toBeDefined()
+
     await ui.press({ key: 'back' })
     expect((await ui.find({ key: 'rules' }))?.text).toBe('Rules (2)')
     await ui.unmount()
@@ -487,7 +577,7 @@ test('a request a rule changed is marked in the list and explained in its detail
   }
 })
 
-const TRACKING_FILE = `${HOME}/.claude/proxy-mod/sessions/session/tracking.json`
+const TRACKING_FILE = `${HOME}/.claude/proxy-mod/tracking.json`
 
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: the domains view tracks what you add and offers what passed through`, SLOW, async ($, on) => {
@@ -538,6 +628,33 @@ test('Claude tracks domains through the tool, and sees what passed through', SLO
   expect(listed).toContain('Only *.kolesa.kz are decrypted and recorded')
   const off = String((await $.tool.call({ tool: 'mcp__wirepane__track_domains', enabled: false })).result)
   expect(off).toContain('The list is off')
+  await ui.press({ key: 'toggle' })
+  await clock.advance(200)
+  await ui.unmount()
+})
+
+test('after a /clear, the domains Claude tracks still reach the running proxy', SLOW, async ($, on) => {
+  const clock = mock.clock(on)
+  const machine = fakeMachine(on, clock)
+  on('session.end', async ($, e) => ({ sessionId: e.sessionId }))
+  const ui = await $.ui.mount({ plugin: 'wirepane', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'toggle' })
+  await clock.advance(250)
+  const argv = machine.spawned[0]!
+  const watched = argv[argv.indexOf('--tracking') + 1]!
+  // the conversation ends, the proxy stays up, the session goes on under another id
+  await $.session.end({ reason: 'clear', sessionId: 'session', resume: { id: 'session' } })
+  machine.session.id = 'after-clear'
+  await $.tool.call({ tool: 'mcp__wirepane__track_domains', add: ['*.kolesa.kz'] })
+  expect(machine.spawned).toHaveLength(1)
+  expect(JSON.parse(machine.files[watched]!)).toEqual({ enabled: true, patterns: ['*.kolesa.kz'] })
+  // the new session's state starts empty: /proxy start attaches again (this session's link only), and the proxy runs on
+  const attaching = $.command.run({ command: 'proxy', args: 'start' } as Parameters<typeof $.command.run>[0])
+  await clock.advance(300)
+  await attaching
+  await clock.advance(250)
+  expect(machine.spawned).toHaveLength(2)
+  expect(machine.killed).toEqual(['777'])
   await ui.press({ key: 'toggle' })
   await clock.advance(200)
   await ui.unmount()
@@ -767,4 +884,168 @@ test('the tools list and show captured requests for the model', SLOW, async ($, 
   await ui.press({ key: 'toggle' })
   await clock.advance(200)
   await ui.unmount()
+})
+
+test('Claude reads WebSocket messages, gRPC calls and server-sent events, and sends into a live socket', SLOW, async ($, on) => {
+  withStreams = true
+  try {
+    const clock = mock.clock(on)
+    const machine = fakeMachine(on, clock, STREAM_FILES)
+    const ui = await $.ui.mount({ plugin: 'wirepane', surface: 'terminal', ...PANE })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(250)
+
+    const listed = String((await $.tool.call({ tool: 'mcp__wirepane__list_requests' })).result)
+    expect(listed).toContain('wss://api.example.com/chat')
+    expect(listed).toContain('ws messages ↑2 ↓1')
+    expect(listed).toContain('grpc  ! gRPC NOT_FOUND: no such greeter')
+    expect(listed).toContain('2 events')
+
+    const ws = String((await $.tool.call({ tool: 'mcp__wirepane__get_request', id: 4 })).result)
+    expect(ws).toContain('WebSocket: ↑2 ↓1')
+    expect(ws).toContain('1. +0.00s → server hello')
+    expect(ws).toContain('2. +0.12s ← client echo: hello')
+    expect(ws).toContain('[answered by a rule]')
+
+    const grpc = String((await $.tool.call({ tool: 'mcp__wirepane__get_request', id: 5 })).result)
+    expect(grpc).toContain('gRPC NOT_FOUND: no such greeter')
+    expect(grpc).toContain('HTTP/2')
+    expect(grpc).toContain('gRPC messages decoded without a schema')
+    expect(grpc).toContain('1: "hi"')
+    expect(grpc).toContain('--- response trailers ---\ngrpc-status: 5')
+
+    const sse = String((await $.tool.call({ tool: 'mcp__wirepane__get_request', id: 6 })).result)
+    expect(sse).toContain('--- server-sent events: 2 ---')
+    expect(sse).toContain('1. +0.01s start {"step":1}')
+
+    const sent = String((await $.tool.call({ tool: 'mcp__wirepane__send_ws_message', id: 4, to: 'client', text: 'from claude' })).result)
+    expect(sent).toContain('Sent to the client on WebSocket #4')
+    expect(machine.ran.some(command => command.startsWith('curl') && command.includes('http://127.0.0.1:8899/__wirepane/tok3n/ws/send'))).toBe(true)
+    const late = String((await $.tool.call({ tool: 'mcp__wirepane__send_ws_message', id: 9, to: 'server', text: 'x' })).result)
+    expect(late).toContain('Not sent: WebSocket #9 is not open. Open WebSockets: #4.')
+
+    await ui.press({ key: 'open-4' })
+    expect(await ui.find({ text: /Messages · ↑2 ↓1/ })).toBeDefined()
+    expect(await ui.find({ text: /3\. \+1\.50s → server \{"type":"ping"\}/ })).toBeDefined()
+    await ui.input({ key: 'ws-to-server', text: 'typed by hand' })
+    expect(await ui.find({ text: 'Sent to the server.' })).toBeDefined()
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(200)
+    await ui.unmount()
+  } finally {
+    withStreams = false
+  }
+})
+
+test('Claude searches, waits for, replays, compares and exports requests, sparing its context', SLOW, async ($, on) => {
+  const clock = mock.clock(on)
+  const long = `/v4/fetch?$req=${'A'.repeat(300)}`
+  const machine = fakeMachine(on, clock, {
+    [`${RUN_DIR}/1.json`]: JSON.stringify({
+      ...FLOWS[0],
+      method: 'POST',
+      url: 'https://api.example.com/v1/login',
+      reqHeaders: [['Content-Type', 'application/json'], ['Authorization', `Bearer ${'t'.repeat(400)}`]],
+      resHeaders: [['Content-Type', 'application/json']],
+      status: 200,
+      req: { file: `${RUN_DIR}/1.req`, size: 17, stored: 17, isTruncated: false, encoding: null, isDecoded: false },
+      res: { file: `${RUN_DIR}/1.res`, size: 60, stored: 60, isTruncated: false, encoding: null, isDecoded: false },
+    }),
+    [`${RUN_DIR}/1.req`]: '{"user":"tester"}',
+    [`${RUN_DIR}/1.res`]: JSON.stringify({ token: 'abc', user: { id: 7, name: 'Tess', roles: ['admin'] } }),
+  })
+  const ui = await $.ui.mount({ plugin: 'wirepane', surface: 'terminal', ...PANE })
+  await ui.press({ key: 'toggle' })
+  await clock.advance(250)
+
+  const after = String((await $.tool.call({ tool: 'mcp__wirepane__list_requests', since: 2 })).result)
+  expect(after).toContain('1 came after #2')
+  expect(after).toContain('#3 ')
+  expect(after).not.toContain('#2 ')
+  expect(after).toContain('Newest #3: list_requests({ since: 3 })')
+
+  const picked = String((await $.tool.call({ tool: 'mcp__wirepane__get_request', id: 1, json_path: 'user.roles' })).result)
+  expect(picked).toContain('--- response body at user.roles ---\n[\n  "admin"\n]')
+  expect(picked).toContain(`Authorization: Bearer ${'t'.repeat(293)}…(407 chars)`)
+  const headersOnly = String((await $.tool.call({ tool: 'mcp__wirepane__get_request', id: 1, part: 'headers' })).result)
+  expect(headersOnly).toContain('--- response headers ---')
+  expect(headersOnly).not.toContain('--- response body')
+  const summary = String((await $.tool.call({ tool: 'mcp__wirepane__get_request', id: 1, part: 'summary' })).result)
+  expect(summary).toContain("parts: get_request({ id: 1, part: 'headers' | 'request' | 'response' | 'all' })")
+
+  const found = String((await $.tool.call({ tool: 'mcp__wirepane__search_requests', text: 'INVALID_credentials' })).result)
+  expect(found).toContain('#2 POST 401 https://api.example.com/v1/login · in response body: {"error":"invalid_credentials"}')
+
+  const diff = String((await $.tool.call({ tool: 'mcp__wirepane__diff_requests', a: 1, b: 2 })).result)
+  expect(diff).toContain('#1 → #2:')
+  expect(diff).toContain('status: 200 → 401')
+  expect(diff).toContain('response body .token: "abc" → (absent)')
+
+  const already = String((await $.tool.call({ tool: 'mcp__wirepane__wait_for_request', filter: 'method:POST', since: 1 })).result)
+  expect(already).toContain('#2  POST    401')
+  waitFlows = [flow(7, { method: 'PUT', path: '/v1/profile', status: 204 })]
+  const waited = String((await $.tool.call({ tool: 'mcp__wirepane__wait_for_request', filter: 'method:PUT' })).result)
+  expect(waited).toContain('#7  PUT     204  https://api.example.com/v1/profile')
+  expect(waited).toContain('get_request({ id: 7 })')
+
+  waitFlows = [flow(8, { method: 'POST', path: '/v1/login', status: 401, replayOf: 2 })]
+  const replayed = String((await $.tool.call({ tool: 'mcp__wirepane__replay_request', id: 2, headers: { 'X-Debug': '1' } })).result)
+  expect(replayed).toContain('Replayed #2 as #8 (changed: header X-Debug): 401 in 87ms.')
+  const curl = machine.ran.find(command => command.includes('x-wirepane-replay: 2'))!
+  expect(curl).toContain(`--proxy http://127.0.0.1:8899 --cacert ${CA_PATH} --proxy-header x-wirepane-control: tok3n -X POST`)
+  expect(curl).toContain('-H X-Debug: 1')
+  expect(curl).toContain(`--data-binary @${RUN_DIR}/2.req`)
+  expect(curl).toContain('https://api.example.com/v1/login')
+  expect(curl).not.toContain('-H Host:')
+  waitFlows = []
+
+  const exported = String((await $.tool.call({ tool: 'mcp__wirepane__export_har', file: 'out/session.har' })).result)
+  expect(exported).toContain(`Wrote 2 requests to ${ROOT}/out/session.har`)
+  const har = JSON.parse(machine.files[`${ROOT}/out/session.har`]!) as { log: { entries: { request: { url: string } }[] } }
+  expect(har.log.entries.map(entry => entry.request.url)).toEqual(['https://api.example.com/v1/login', 'https://api.example.com/v1/login'])
+
+  void long
+  await ui.press({ key: 'toggle' })
+  await clock.advance(200)
+  await ui.unmount()
+})
+
+test('the doctor names what is in the way, the Health view fixes it, and a session leaving a shared proxy only lets go', SLOW, async ($, on) => {
+  withOtherSession = true
+  try {
+    const clock = mock.clock(on)
+    const machine = fakeMachine(on, clock)
+    on('session.end', async ($, e) => ({ sessionId: e.sessionId }))
+    const ui = await $.ui.mount({ plugin: 'wirepane', surface: 'terminal', ...PANE })
+    await ui.press({ key: 'toggle' })
+    await clock.advance(250)
+
+    const checked = String((await $.tool.call({ tool: 'mcp__wirepane__diagnose' })).result)
+    expect(checked).toContain('Proxy process: pid 4242, Wirepane 0.8.0, up 1 h 5 min, 50.0MB of memory, 3 requests kept (2.0MB on disk)')
+    expect(checked).toContain('shared: this session and 1 other (other-app)')
+    expect(checked).toContain('• Other proxy apps run: Proxyman')
+    expect(checked).toContain('• The system proxy is off')
+    expect(checked).toContain('✓ The proxy runs on port 8899')
+
+    await ui.press({ key: 'health' })
+    expect(await ui.find({ text: /^Health · checked/ })).toBeDefined()
+    expect(await ui.find({ text: 'Other proxy apps run: Proxyman' })).toBeDefined()
+    // Restart: the old run winds down (on the mocked clock), then a new one starts
+    const restarting = ui.press({ key: 'proxy-restart' })
+    await clock.advance(300)
+    await restarting
+    await clock.advance(250)
+    expect(machine.spawned).toHaveLength(2)
+    expect(machine.killed).toEqual(['4242'])
+    await ui.press({ key: 'back' })
+
+    // another session still uses the proxy: this one only lets go of it
+    await $.session.end({ reason: 'prompt_input_exit', sessionId: 'session', resume: { id: 'session' } })
+    expect(machine.killed).toEqual(['4242', '777'])
+    await clock.advance(200)
+    await ui.unmount()
+  } finally {
+    withOtherSession = false
+  }
 })

@@ -1,7 +1,7 @@
 // Pure logic shared by the pane and the tools: the sidecar's line protocol,
 // the flow list, the filter language and the formats.
 
-import type { ProxyAddress, ProxyCa, ProxyFlow } from '../types'
+import type { ProxyAddress, ProxyCa, ProxyFlow, ProxySession } from '../types'
 
 export type SidecarEvent =
   | {
@@ -13,7 +13,18 @@ export type SidecarEvent =
       pid: number
       runDir: string
       ca: ProxyCa
+      control?: { token: string }
+      isShared?: boolean
+      version?: string
+      sessions?: ProxySession[]
     }
+  | { t: 'attached'; pid: number; proxyPid: number; isStarted: boolean; version?: string }
+  | { t: 'sessions'; sessions: ProxySession[] }
+  | { t: 'pinned'; client: string | null; host: string }
+  | { t: 'unpinned'; client: string | null; host: string }
+  | { t: 'cleared' }
+  | { t: 'tick' }
+  | { t: 'stopping' }
   | { t: 'flow'; flow: ProxyFlow }
   | { t: 'network'; lan: ProxyAddress[] }
   | { t: 'rules'; file: string; total: number; active: number; errors: string[]; untrusted: string[] }
@@ -21,7 +32,7 @@ export type SidecarEvent =
   | { t: 'skipped'; hosts: Record<string, number> }
   | { t: 'system-proxy'; isOn: boolean }
   | { t: 'fatal'; code: string; message: string }
-  | { t: 'log'; level: string; message: string }
+  | { t: 'log'; level: string; message: string; source?: string }
 
 export type FlowBody = {
   file: string
@@ -30,18 +41,92 @@ export type FlowBody = {
   isTruncated: boolean
   encoding: string | null
   isDecoded: boolean
+  /** A readable rendering the sidecar wrote beside a body it can decode. */
+  view?: string
+  /** What `view` decodes: gRPC messages or a bare protobuf message, both without a schema. */
+  viewKind?: 'grpc' | 'protobuf'
 }
 
 export type FlowDetail = ProxyFlow & {
   url: string
   httpVersion?: string
+  /** The protocol the server was spoken to in; HTTP/2 when the client and the server both speak it. */
+  upstreamHttpVersion?: string | null
   statusMessage?: string | null
   reqHeaders: [string, string][]
   resHeaders: [string, string][]
+  /** Trailing headers after the response body (gRPC's status travels there). */
+  resTrailers?: [string, string][]
+  /** A WebSocket's message log (JSON lines), how many it holds, and how it closed. */
+  ws?: { file: string; count: number; close: { code: number | null; reason: string; by: string } | null; isMock?: boolean }
+  /** A text/event-stream response's events (JSON lines) and their count. */
+  sse?: { file: string; count: number }
   /** What the rules did, one line each, `id: what`. */
   ruleLog?: string[]
   req: FlowBody | null
   res: FlowBody | null
+}
+
+/** One WebSocket message as the sidecar records it: ms since the upgrade, out = client to server. */
+export type WsRecord = {
+  t: number
+  dir: 'out' | 'in'
+  op: string
+  size: number
+  text?: string
+  b64?: string
+  code?: number | null
+  reason?: string
+  isCut?: boolean
+  note?: string
+  was?: string
+}
+
+/** One server-sent event as recorded: ms since the response began. */
+export type SseRecord = { t: number; event?: string; id?: string; data: string; retry?: number; isCut?: boolean }
+
+/** The records of a JSON-lines log, the broken lines left out. */
+export function parseRecords<T>(text: string): T[] {
+  const out: T[] = []
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      out.push(JSON.parse(line) as T)
+    } catch {}
+  }
+  return out
+}
+
+function seconds(ms: number): string {
+  return `+${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)}s`
+}
+
+/** A message as one line: number, time, direction, kind, size, the text cut at `max`, and what a rule did. */
+export function wsLine(record: WsRecord, n: number, max = 300): string {
+  const arrow = record.dir === 'out' ? '→ server' : '← client'
+  const body =
+    record.op === 'close'
+      ? `close ${record.code ?? ''}${record.reason ? ` "${record.reason}"` : ''}`
+      : record.text !== undefined
+        ? truncate(record.text.replace(/\s*\n\s*/g, ' '), max)
+        : record.b64 !== undefined
+          ? `${record.op} ${record.size}B base64 ${truncate(record.b64, Math.min(max, 120))}`
+          : record.op
+  const note = record.note ? `  [${record.note}${record.was !== undefined ? `; was: ${truncate(record.was, 80)}` : ''}]` : ''
+  return `${n}. ${seconds(record.t)} ${arrow} ${record.op === 'text' ? '' : `(${record.op}) `}${body}${note}`
+}
+
+export function sseLine(record: SseRecord, n: number, max = 300): string {
+  const name = record.event ? `${record.event} ` : ''
+  const id = record.id !== undefined ? ` id=${record.id}` : ''
+  return `${n}. ${seconds(record.t)} ${name}${truncate(record.data.replace(/\s*\n\s*/g, ' '), max)}${id}`
+}
+
+/** What a streaming exchange carried so far: `↑2 ↓5` messages, or `12 events`; empty for others. */
+export function streamNote(flow: Pick<ProxyFlow, 'kind' | 'wsOut' | 'wsIn' | 'sseEvents'>): string {
+  if (flow.kind === 'ws' && (flow.wsOut !== undefined || flow.wsIn !== undefined)) return `↑${flow.wsOut ?? 0} ↓${flow.wsIn ?? 0}`
+  if (flow.sseEvents !== undefined) return `${flow.sseEvents} ev`
+  return ''
 }
 
 // --- the line protocol ------------------------------------------------------
@@ -82,12 +167,13 @@ export function flowUrl(flow: Pick<ProxyFlow, 'scheme' | 'host' | 'port' | 'path
   return `${scheme}://${flow.host}${isDefaultPort ? '' : `:${flow.port}`}${flow.path}`
 }
 
-export type FlowType = 'json' | 'html' | 'xml' | 'js' | 'css' | 'img' | 'font' | 'media' | 'text' | 'form' | 'ws' | 'tunnel' | 'other'
+export type FlowType = 'json' | 'html' | 'xml' | 'js' | 'css' | 'img' | 'font' | 'media' | 'text' | 'form' | 'grpc' | 'ws' | 'tunnel' | 'other'
 
 export function typeOf(flow: Pick<ProxyFlow, 'kind' | 'contentType'>): FlowType {
   if (flow.kind === 'ws') return 'ws'
   if (flow.kind === 'tunnel') return 'tunnel'
   const type = flow.contentType ?? ''
+  if (type.startsWith('application/grpc')) return 'grpc'
   if (type.includes('json')) return 'json'
   if (type.includes('html')) return 'html'
   if (type.includes('xml')) return 'xml'
@@ -102,7 +188,20 @@ export function typeOf(flow: Pick<ProxyFlow, 'kind' | 'contentType'>): FlowType 
 }
 
 export function isFailure(flow: ProxyFlow): boolean {
-  return flow.state === 'error' || (flow.status !== null && flow.status >= 400)
+  return flow.state === 'error' || (flow.status !== null && flow.status >= 400) || (flow.grpcStatus !== undefined && flow.grpcStatus !== 0)
+}
+
+const GRPC_CODES = [
+  'OK', 'CANCELLED', 'UNKNOWN', 'INVALID_ARGUMENT', 'DEADLINE_EXCEEDED', 'NOT_FOUND', 'ALREADY_EXISTS', 'PERMISSION_DENIED',
+  'RESOURCE_EXHAUSTED', 'FAILED_PRECONDITION', 'ABORTED', 'OUT_OF_RANGE', 'UNIMPLEMENTED', 'INTERNAL', 'UNAVAILABLE', 'DATA_LOSS',
+  'UNAUTHENTICATED',
+]
+
+/** `gRPC NOT_FOUND: no such greeter` for a call that ended with a status, null otherwise. */
+export function grpcLabel(flow: Pick<ProxyFlow, 'grpcStatus' | 'grpcMessage'>): string | null {
+  if (flow.grpcStatus === undefined) return null
+  const name = GRPC_CODES[flow.grpcStatus] ?? `status ${flow.grpcStatus}`
+  return `gRPC ${name}${flow.grpcMessage ? `: ${flow.grpcMessage}` : ''}`
 }
 
 export function isTextual(contentType: string | null): boolean {
@@ -172,6 +271,8 @@ const IS_TESTS: Record<string, (flow: ProxyFlow) => boolean> = {
   http: flow => flow.scheme === 'http',
   rejected: flow => flow.errorCode === 'client-rejected-cert',
   modified: flow => (flow.rules?.length ?? 0) > 0,
+  h2: flow => flow.httpVersion === '2',
+  grpc: flow => typeOf(flow) === 'grpc',
 }
 
 export function parseFilter(query: string): ParsedFilter {
@@ -272,13 +373,30 @@ export function truncate(text: string, width: number): string {
   return text.length <= width ? text : `${text.slice(0, Math.max(0, width - 1))}…`
 }
 
+/** The flow's URL in at most `max` characters: the end (the query first) cut, and how much was. */
+export function modelUrl(flow: Pick<ProxyFlow, 'scheme' | 'host' | 'port' | 'path' | 'kind'>, max = 160): string {
+  const url = flowUrl(flow)
+  if (url.length <= max) return url
+  let keep = max - 4
+  let suffix = ''
+  for (;;) {
+    suffix = `…(+${url.length - keep})`
+    if (keep + suffix.length <= max || keep <= 1) break
+    keep -= 1
+  }
+  return `${url.slice(0, keep)}${suffix}`
+}
+
 /** One line per flow for the model: aligned, newest last. */
 export function flowTable(flows: readonly ProxyFlow[]): string {
   return flows
     .map(flow => {
-      const error = flow.error ? `  ! ${truncate(flow.error, 160)}` : ''
+      const stream = flow.kind === 'ws' && streamNote(flow) ? ` messages ${streamNote(flow)}` : flow.sseEvents !== undefined ? ` ${flow.sseEvents} events` : ''
+      const grpc = flow.grpcStatus ? grpcLabel(flow) : null
+      const error = flow.error ? `  ! ${truncate(flow.error, 160)}` : grpc ? `  ! ${truncate(grpc, 160)}` : ''
       const rules = flow.rules?.length ? `  rules: ${flow.rules.join(', ')}` : ''
-      return `#${flow.id}  ${flow.method.padEnd(7)} ${statusLabel(flow).padEnd(4)} ${flowUrl(flow)}  ${formatSize(flow.resSize)}  ${formatDuration(flow.durationMs)}  ${typeOf(flow)}${rules}${error}`
+      const replay = flow.replayOf ? `  replay of #${flow.replayOf}` : ''
+      return `#${flow.id}  ${flow.method.padEnd(7)} ${statusLabel(flow).padEnd(4)} ${modelUrl(flow)}  ${formatSize(flow.resSize)}  ${formatDuration(flow.durationMs)}  ${typeOf(flow)}${stream}${replay}${rules}${error}`
     })
     .join('\n')
 }

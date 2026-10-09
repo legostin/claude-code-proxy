@@ -6,7 +6,10 @@
 // A rules file is `{ "rules": [Rule, ...] }`; its order is the priority, the
 // first rule applying first. A rule:
 //   { id, name?, description?, enabled?, match?, request?: Action[],
-//     response?: Action[], stop? }
+//     response?: Action[], messages?: Step[], stop? }
+// `messages` acts on a WebSocket's messages; `match` then matches the
+// upgrade request, and `request` steps act on it (a `respond` with status
+// 101 makes Wirepane the WebSocket server).
 
 export const REQUEST_ACTIONS = [
   'delay', 'throttle', 'setHeader', 'removeHeader', 'setQuery', 'removeQuery',
@@ -16,6 +19,9 @@ export const RESPONSE_ACTIONS = [
   'delay', 'throttle', 'setStatus', 'setHeader', 'removeHeader',
   'setBody', 'replaceBody', 'mergeJson', 'fail', 'script',
 ]
+export const MESSAGE_ACTIONS = ['replaceMessage', 'setMessage', 'mergeJson', 'drop', 'delay', 'reply', 'send', 'close', 'script']
+// what a step may do as a WebSocket opens, before any message
+const OPEN_ACTIONS = new Set(['send', 'close', 'delay', 'script'])
 const BODY_ACTIONS = new Set(['setBody', 'replaceBody', 'mergeJson', 'script'])
 const MATCH_KEYS = ['url', 'host', 'path', 'methods', 'headers', 'query', 'bodyContains', 'status', 'contentType']
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -149,13 +155,28 @@ function bodySourceError(action, where) {
 
 function actionErrors(action, phase, where) {
   if (!isObject(action)) return [`${where} must be an object`]
-  const allowed = phase === 'request' ? REQUEST_ACTIONS : RESPONSE_ACTIONS
+  const allowed = phase === 'request' ? REQUEST_ACTIONS : phase === 'response' ? RESPONSE_ACTIONS : MESSAGE_ACTIONS
   if (!allowed.includes(action.type)) {
     return [`${where}: type must be one of ${allowed.join(', ')} in ${phase} (got ${JSON.stringify(action.type)})`]
   }
   const errors = []
   const need = (ok, text) => {
     if (!ok) errors.push(`${where} (${action.type}): ${text}`)
+  }
+  if (phase === 'messages') {
+    if (action.direction !== undefined) need(['out', 'in', 'both'].includes(action.direction), 'direction must be out (client to server), in (server to client) or both')
+    if (action.on !== undefined) need(action.on === 'message' || action.on === 'open', 'on must be message or open')
+    if (action.on === 'open') {
+      need(OPEN_ACTIONS.has(action.type), `on open takes ${[...OPEN_ACTIONS].join(', ')} only`)
+      need(action.when === undefined && action.direction === undefined, 'on open takes no when or direction')
+    }
+    if (action.when !== undefined) {
+      if (!isString(action.when) || action.when === '') need(false, 'when must be text the message holds, or re:<regex>')
+      else if (isRegexPattern(action.when)) {
+        const error = patternError(action.when, `${where} (${action.type}) when`)
+        if (error) errors.push(error)
+      }
+    }
   }
   switch (action.type) {
     case 'delay':
@@ -182,17 +203,30 @@ function actionErrors(action, phase, where) {
       if (action.path !== undefined) need(isString(action.path) && action.path.startsWith('/'), 'path must start with /')
       break
     case 'replaceUrl':
+    case 'replaceMessage':
     case 'replaceBody': {
       const error = patternError(action.pattern, `${where} (${action.type}) pattern`)
       if (error) errors.push(error)
       need(isString(action.with), 'with must be a string')
       break
     }
-    case 'setBody': {
-      const error = bodySourceError(action, `${where} (setBody)`)
+    case 'setBody':
+    case 'setMessage':
+    case 'reply': {
+      const error = bodySourceError(action, `${where} (${action.type})`)
       if (error) errors.push(error)
       break
     }
+    case 'send': {
+      const error = bodySourceError(action, `${where} (send)`)
+      if (error) errors.push(error)
+      need(action.to === 'client' || action.to === 'server', 'to must be client or server')
+      break
+    }
+    case 'close':
+      if (action.code !== undefined) need(isNumber(action.code, 1000, 4999) && Number.isInteger(action.code), 'code must be 1000 to 4999')
+      if (action.reason !== undefined) need(isString(action.reason) && action.reason.length <= 123, 'reason must be text of at most 123 characters')
+      break
     case 'mergeJson':
       need(isObject(action.json) || Array.isArray(action.json), 'json must be an object or an array')
       break
@@ -264,15 +298,15 @@ export function ruleErrors(rule, where = 'rule') {
     if (rule[key] !== undefined && typeof rule[key] !== 'boolean') errors.push(`${label}: ${key} must be true or false`)
   }
   errors.push(...matchErrors(rule.match, `${label}: match`))
-  for (const phase of ['request', 'response']) {
+  for (const phase of ['request', 'response', 'messages']) {
     if (rule[phase] === undefined) continue
     if (!Array.isArray(rule[phase])) {
-      errors.push(`${label}: ${phase} must be a list of actions`)
+      errors.push(`${label}: ${phase} must be a list of ${phase === 'messages' ? 'steps' : 'actions'}`)
       continue
     }
     rule[phase].forEach((action, i) => errors.push(...actionErrors(action, phase, `${label}: ${phase}[${i}]`)))
   }
-  if (!(rule.request?.length || rule.response?.length)) errors.push(`${label}: give at least one action in request or response`)
+  if (!(rule.request?.length || rule.response?.length || rule.messages?.length)) errors.push(`${label}: give at least one action in request, response or messages`)
   const responseOnly = rule.match && (rule.match.status !== undefined || rule.match.contentType !== undefined)
   if (responseOnly && rule.request?.length) errors.push(`${label}: match.status and match.contentType are known only after the response, so such a rule takes response actions only`)
   return errors
@@ -367,7 +401,22 @@ export function needsResponseBody(rule) {
 }
 
 export function scriptsOf(rule) {
-  return [...(rule.request ?? []), ...(rule.response ?? [])].filter(action => action?.type === 'script').map(action => action.code)
+  return [...(rule.request ?? []), ...(rule.response ?? []), ...(rule.messages ?? [])].filter(action => action?.type === 'script').map(action => action.code)
+}
+
+/** Whether a rule acts on plain HTTP exchanges (and not only on WebSocket messages). */
+export function actsOnHttp(rule) {
+  return (rule.request?.length ?? 0) > 0 || (rule.response?.length ?? 0) > 0
+}
+
+/** Whether a message step takes this message: `{ direction: 'out'|'in', text }`, `text` null when binary. */
+export function stepTakes(step, message) {
+  if ((step.on ?? 'message') !== 'message') return false
+  const direction = step.direction ?? 'both'
+  if (direction !== 'both' && direction !== message.direction) return false
+  if (step.when === undefined) return true
+  if (message.text === null) return false
+  return isRegexPattern(step.when) ? new RegExp(step.when.slice(3)).test(message.text) : message.text.includes(step.when)
 }
 
 // --- text -------------------------------------------------------------------
@@ -426,6 +475,18 @@ export function describeAction(action) {
       return action.kind === 'timeout' ? 'never answer (time out)' : action.kind === 'reset' ? 'reset the connection' : 'close the connection'
     case 'script':
       return `run a script (${action.code.split('\n').length} lines)`
+    case 'replaceMessage':
+      return `replace ${action.pattern} with "${short(action.with, 30)}"`
+    case 'setMessage':
+      return `set it to ${bodySource(action)}`
+    case 'drop':
+      return 'drop it'
+    case 'reply':
+      return `reply ${bodySource(action)} instead of passing it on`
+    case 'send':
+      return `send ${bodySource(action)} to the ${action.to}`
+    case 'close':
+      return `close the WebSocket (${action.code ?? 1000}${action.reason ? ` "${short(action.reason, 30)}"` : ''})`
     default:
       return `unknown action ${JSON.stringify(action?.type)}`
   }
@@ -445,10 +506,19 @@ export function describeMatch(match = {}) {
   return parts.length ? parts.join(' · ') : 'every request'
 }
 
+/** A message step in words: which messages, then what it does to them. */
+export function describeStep(step) {
+  if (step.on === 'open') return `on open: ${describeAction(step)}`
+  const direction = step.direction === 'out' ? 'client → server' : step.direction === 'in' ? 'server → client' : 'each message'
+  const when = step.when === undefined ? '' : isRegexPattern(step.when) ? ` matching ${step.when}` : ` holding "${short(step.when, 30)}"`
+  return `${direction}${when}: ${describeAction(step)}`
+}
+
 /** One line a person reads: what the rule catches and what it does there. */
 export function describeRule(rule) {
   const phases = []
   if (rule.request?.length) phases.push(`before sending: ${rule.request.map(describeAction).join(', ')}`)
   if (rule.response?.length) phases.push(`on the response: ${rule.response.map(describeAction).join(', ')}`)
+  if (rule.messages?.length) phases.push(`WebSocket messages: ${rule.messages.map(describeStep).join('; ')}`)
   return `${describeMatch(rule.match)} → ${phases.join('; ')}${rule.stop ? '; then stop' : ''}`
 }

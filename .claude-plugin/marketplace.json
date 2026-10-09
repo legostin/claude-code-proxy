@@ -4,13 +4,13 @@
     "name": "legostin"
   },
   "metadata": {
-    "description": "Wirepane: a Claude Code mod that intercepts and decrypts HTTPS from your browser, iOS and Android, and lets Claude read it."
+    "description": "Wirepane: the debugging proxy Claude can read. HTTPS, HTTP/2, gRPC and WebSockets from your browser, iOS and Android, inside Claude Code."
   },
   "plugins": [
     {
       "name": "wirepane",
       "source": "./",
-      "description": "An HTTPS debugging proxy inside Claude Code on macOS: intercepts browser, iOS and Android traffic with its own CA, setup guides, a filterable request list and tools for Claude."
+      "description": "The debugging proxy Claude can read, inside Claude Code on macOS: HTTPS, HTTP/2, gRPC, WebSockets and server-sent events from the browser, iOS and Android; one-press device setup; rules and mock servers; a doctor that fixes what is in the way; 15 tools and 3 skills for Claude."
     }
   ]
 }

@@ -1,6 +1,6 @@
 // Types of shared/rules.mjs, for the hooks module.
 
-export type RulePhase = 'request' | 'response'
+export type RulePhase = 'request' | 'response' | 'messages'
 
 export type RuleMatch = {
   url?: string
@@ -24,6 +24,8 @@ export type Rule = {
   match?: RuleMatch
   request?: RuleAction[]
   response?: RuleAction[]
+  /** Steps on a WebSocket's messages; `match` then matches the upgrade request. */
+  messages?: RuleAction[]
   stop?: boolean
 }
 
@@ -31,6 +33,7 @@ export type ParsedRule = { rule: Rule; errors: string[] }
 
 export const REQUEST_ACTIONS: readonly string[]
 export const RESPONSE_ACTIONS: readonly string[]
+export const MESSAGE_ACTIONS: readonly string[]
 export function isRegexPattern(pattern: string): boolean
 export function toRegExp(pattern: string): RegExp
 export function statusMatcher(text: string): ((status: number) => boolean) | null
@@ -45,7 +48,10 @@ export function matchesResponse(rule: Rule, response: { status: number; contentT
 export function needsRequestBody(rule: Rule): boolean
 export function needsResponseBody(rule: Rule): boolean
 export function scriptsOf(rule: Rule): string[]
+export function actsOnHttp(rule: Rule): boolean
+export function stepTakes(step: RuleAction, message: { direction: 'out' | 'in'; text: string | null }): boolean
 export function describeAction(action: RuleAction): string
+export function describeStep(step: RuleAction): string
 export function describeMatch(match?: RuleMatch): string
 export function describeRule(rule: Rule): string
 

@@ -3,23 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Wirepane: an HTTPS debugging proxy inside Claude Code</title>
-<meta name="description" content="A Claude Code mod that intercepts and decrypts HTTPS traffic from your browser, iOS Simulator, iPhone and Android, lists every request with a filter, and lets Claude read the real requests and responses. A Proxyman and Charles alternative inside Claude Code.">
-<meta name="keywords" content="Claude Code, Claude Code plugin, Claude Code mod, HTTPS proxy, MITM proxy, debugging proxy, intercept HTTPS traffic, Proxyman alternative, Charles Proxy alternative, mitmproxy, iOS Simulator proxy, Android emulator proxy, debug network requests, AI coding agent">
+<title>Wirepane: the debugging proxy Claude can read</title>
+<meta name="description" content="A Claude Code mod that decrypts HTTPS, HTTP/2, gRPC, WebSockets and server-sent events from your browser, iOS Simulator, iPhone and Android, and gives Claude 15 tools to search, wait for, replay, diff and change the traffic, with a doctor that fixes what is in the way. A Proxyman, Charles, mitmproxy and HTTP Toolkit alternative inside Claude Code.">
+<meta name="keywords" content="Claude Code, Claude Code plugin, Claude Code mod, HTTPS proxy, MITM proxy, debugging proxy, HTTP/2 proxy, gRPC debugging, WebSocket debugging, server-sent events, mock server, Proxyman alternative, Charles Proxy alternative, mitmproxy alternative, HTTP Toolkit alternative, iOS Simulator proxy, Android emulator proxy, certificate pinning, AI coding agent">
 <meta name="author" content="Legostin Vyacheslav">
 <link rel="canonical" href="https://legostin.github.io/wirepane/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Wirepane">
-<meta property="og:title" content="Wirepane: an HTTPS debugging proxy inside Claude Code">
-<meta property="og:description" content="Intercept and decrypt HTTPS from your browser, iOS and Android, filter the requests, and let Claude read them. No separate proxy app.">
+<meta property="og:title" content="Wirepane: the debugging proxy Claude can read">
+<meta property="og:description" content="HTTPS, HTTP/2, gRPC, WebSockets and SSE from your browser, iOS and Android, inside Claude Code. Claude searches, waits for, replays, diffs and mocks the traffic, and a doctor fixes what is in the way.">
 <meta property="og:url" content="https://legostin.github.io/wirepane/">
 <meta property="og:image" content="https://legostin.github.io/wirepane/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Wirepane for Claude Code: a request list with 401 and 503 rows and a filter">
+<meta property="og:image:alt" content="Wirepane for Claude Code: a request list with 401, gRPC and WebSocket rows and a filter">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Wirepane: an HTTPS debugging proxy inside Claude Code">
-<meta name="twitter:description" content="Intercept HTTPS from your browser, iOS and Android, and let Claude read the real requests and responses.">
+<meta name="twitter:title" content="Wirepane: the debugging proxy Claude can read">
+<meta name="twitter:description" content="HTTPS, HTTP/2, gRPC, WebSockets and SSE from your browser, iOS and Android, inside Claude Code, with 15 tools for Claude.">
 <meta name="twitter:image" content="https://legostin.github.io/wirepane/og.png">
 <meta name="theme-color" content="#0f1115">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='28' rx='7' fill='%23d97757'/%3E%3Cpath d='M8 12h12l-3-3M24 20H12l3 3' stroke='%23fff' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
@@ -29,7 +29,8 @@
   "@type": "SoftwareSourceCode",
   "name": "Wirepane",
   "alternateName": "claude-code-proxy",
-  "description": "A Claude Code mod that intercepts and decrypts HTTP and HTTPS traffic from a browser, the iOS Simulator, an iPhone, the Android emulator or an Android phone, lists every request with a filter, and gives Claude tools to read the requests and responses.",
+  "version": "0.8.0",
+  "description": "A Claude Code mod that decrypts HTTPS, HTTP/2, gRPC, WebSocket and server-sent events traffic from a browser, the iOS Simulator, an iPhone, the Android emulator or an Android phone, shows it in a filterable pane, changes it with rules and mock servers, and gives Claude tools to search, wait for, replay, compare and export requests, with a doctor that diagnoses and fixes setup problems.",
   "url": "https://legostin.github.io/wirepane/",
   "codeRepository": "https://github.com/legostin/wirepane",
   "programmingLanguage": ["TypeScript", "JavaScript"],
@@ -37,7 +38,7 @@
   "operatingSystem": "macOS",
   "license": "https://opensource.org/licenses/MIT",
   "author": { "@type": "Person", "name": "Legostin Vyacheslav", "url": "https://github.com/legostin" },
-  "keywords": "Claude Code, HTTPS proxy, MITM proxy, debugging proxy, Proxyman alternative, Charles Proxy alternative, iOS Simulator, Android emulator"
+  "keywords": "Claude Code, HTTPS proxy, MITM proxy, HTTP/2, gRPC, WebSocket, server-sent events, mock server, Proxyman alternative, Charles Proxy alternative, mitmproxy alternative, iOS Simulator, Android emulator"
 }
 </script>
 <script type="application/ld+json">
@@ -47,23 +48,28 @@
   "mainEntity": [
     {
       "@type": "Question",
-      "name": "Is it a replacement for Proxyman, Charles or mitmproxy?",
-      "acceptedAnswer": { "@type": "Answer", "text": "For everyday debugging of what an app sent and what came back, yes, without leaving Claude Code. Rules cover rewriting, mocking and throttling; there are no interactive breakpoints, HTTP/2 or gRPC." }
+      "name": "Is it a replacement for Proxyman, Charles, mitmproxy or HTTP Toolkit?",
+      "acceptedAnswer": { "@type": "Answer", "text": "For finding out what an app sent, what came back and why it fails, yes, without leaving Claude Code: HTTP/2, gRPC, WebSockets and SSE, with rules, mocks, replays and diffs. It has no interactive breakpoints and no HTTP/3; it works behind an office proxy. It is built around the agent: the doctor, the waiting, search and diff tools, the context budget, and skills that fix the app's own code." }
     },
     {
       "@type": "Question",
       "name": "Do I have to install the certificate on my Mac?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Not for the separate browser, which trusts the proxy by SPKI hash. Safari, native macOS apps and the iOS Simulator need the CA trusted; the setup tabs give the commands." }
+      "acceptedAnswer": { "@type": "Answer", "text": "Not for the separate browser, which trusts the proxy by SPKI hash. Safari, native Mac apps and the iOS Simulator need the CA, one press each." }
     },
     {
       "@type": "Question",
       "name": "Why do some requests show CERT?",
-      "acceptedAnswer": { "@type": "Answer", "text": "The client refused the proxy's certificate: its CA is not trusted yet, or the app pins its certificates. Finish the setup steps, or add the host to Hosts not to decrypt." }
+      "acceptedAnswer": { "@type": "Answer", "text": "The client refused the proxy's certificate: it does not trust the CA yet, or the app pins its certificates. The diagnose tool tells which, and a pinned host passes through after two refusals so the app keeps working." }
+    },
+    {
+      "@type": "Question",
+      "name": "I see nothing from my Flutter, Go or Unity app.",
+      "acceptedAnswer": { "@type": "Answer", "text": "Some runtimes ignore the system proxy. Wirepane's troubleshooting skill gives Claude the few lines that fix it in a debug build, such as Flutter's HttpOverrides." }
     },
     {
       "@type": "Question",
       "name": "Does my traffic leave my machine?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Only for the servers it was going to anyway. The proxy listens on 127.0.0.1 unless you choose lan, recorded requests stay in ~/.claude/proxy-mod, and Claude reads a request only when it calls the tools; then that request is part of the conversation." }
+      "acceptedAnswer": { "@type": "Answer", "text": "Only for the servers it was going to anyway. Recordings stay in ~/.claude/proxy-mod, and Claude reads a request only through a tool." }
     }
   ]
 }
@@ -72,28 +78,28 @@
   :root {
     --bg: #fbfaf7; --fg: #1c1b19; --muted: #6b6760; --line: #e6e2da;
     --card: #ffffff; --accent: #c4623e; --code-bg: #f3f0ea;
-    --ok: #2f7d4f; --warn: #a86a00; --err: #b3261e;
+    --ok: #2f7d4f; --warn: #a86a00; --err: #b3261e; --info: #3a6ea5;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       --bg: #0f1115; --fg: #ece9e3; --muted: #9a958c; --line: #262a31;
       --card: #161920; --accent: #e08a68; --code-bg: #1c2027;
-      --ok: #6cc690; --warn: #e3b341; --err: #f2766b;
+      --ok: #6cc690; --warn: #e3b341; --err: #f2766b; --info: #7fb0e6;
     }
   }
   :root[data-theme="dark"] {
     --bg: #0f1115; --fg: #ece9e3; --muted: #9a958c; --line: #262a31;
     --card: #161920; --accent: #e08a68; --code-bg: #1c2027;
-    --ok: #6cc690; --warn: #e3b341; --err: #f2766b;
+    --ok: #6cc690; --warn: #e3b341; --err: #f2766b; --info: #7fb0e6;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif; }
-  main { max-width: 860px; margin: 0 auto; padding: 48px 16px 72px; }
+  main { max-width: 900px; margin: 0 auto; padding: 48px 16px 72px; }
   header .tag { color: var(--accent); font-weight: 600; letter-spacing: .02em; font-size: 14px; }
-  h1 { font-size: clamp(30px, 5vw, 44px); line-height: 1.15; margin: 8px 0 16px; letter-spacing: -0.02em; }
-  h2 { font-size: 22px; margin: 48px 0 12px; }
+  h1 { font-size: clamp(30px, 5vw, 46px); line-height: 1.12; margin: 8px 0 16px; letter-spacing: -0.02em; }
+  h2 { font-size: 23px; margin: 56px 0 12px; letter-spacing: -0.01em; }
   h3 { font-size: 17px; margin: 24px 0 6px; }
-  p.lead { font-size: 19px; color: var(--muted); margin: 0 0 24px; }
+  p.lead { font-size: 19px; color: var(--muted); margin: 0 0 20px; }
   a { color: var(--accent); }
   .actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0 8px; }
   .btn { display: inline-block; padding: 10px 16px; border-radius: 8px; text-decoration: none; font-weight: 600; border: 1px solid var(--line); color: var(--fg); background: var(--card); }
@@ -109,15 +115,23 @@
   .pane .btns { color: var(--muted); white-space: pre; }
   .pane .filter { color: var(--muted); margin-bottom: 6px; }
   .pane .filter b { color: var(--fg); font-weight: 400; }
-  .s2 { color: var(--ok); } .s4 { color: var(--warn); } .s5 { color: var(--err); } .dim { color: var(--muted); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 12px; }
+  .s2 { color: var(--ok); } .s4 { color: var(--warn); } .s5 { color: var(--err); } .dim { color: var(--muted); } .claude { color: var(--accent); }
+  .asks { display: grid; gap: 8px; margin: 20px 0; }
+  .ask { background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; padding: 10px 14px; font-size: 15.5px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-top: 12px; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
   .card h3 { margin: 0 0 6px; font-size: 16px; }
   .card p { margin: 0; color: var(--muted); font-size: 15px; }
   table { width: 100%; border-collapse: collapse; font-size: 15px; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { color: var(--muted); font-weight: 600; }
+  td code { white-space: nowrap; }
   .table-wrap { overflow-x: auto; }
+  .health .f { display: flex; gap: 10px; margin: 6px 0; }
+  .health .m { width: 1.2em; flex: none; font-weight: 700; }
+  .health .fail { color: var(--err); } .health .warn { color: var(--warn); } .health .ok { color: var(--ok); } .health .info { color: var(--info); }
+  .health .fix { color: var(--muted); font-size: 14px; }
+  .health .btn-inline { border: 1px solid var(--line); border-radius: 6px; padding: 0 8px; margin-left: 8px; font-size: 13px; color: var(--fg); white-space: nowrap; }
   ul.limits li { margin-bottom: 6px; }
   details { border-bottom: 1px solid var(--line); padding: 10px 0; }
   summary { cursor: pointer; font-weight: 600; }
@@ -128,106 +142,156 @@
 <body>
 <main>
   <header>
-    <div class="tag">Claude Code mod · open source · MIT</div>
-    <h1>An HTTPS debugging proxy inside Claude Code</h1>
-    <p class="lead"><strong>Wirepane</strong> intercepts and decrypts the HTTP and HTTPS traffic of your browser, the iOS Simulator, an iPhone, the Android emulator or an Android phone. Every request lands in a filterable list, and Claude reads the same traffic, so <em>"why does login return 401?"</em> gets answered from the real request and response.</p>
+    <div class="tag">Claude Code mod · open source · MIT · macOS</div>
+    <h1>The debugging proxy Claude can read</h1>
+    <p class="lead"><strong>Wirepane</strong> turns Claude Code into an HTTPS debugging proxy for the browser, the iOS Simulator, iPhones, the Android emulator and Android phones. It decrypts <strong>HTTP/2, gRPC, WebSockets and server-sent events</strong>, shows them next to your conversation, and gives Claude the same traffic through 15 tools.</p>
     <div class="actions">
       <a class="btn primary" href="https://github.com/legostin/wirepane">View on GitHub</a>
       <a class="btn" href="#install">Install</a>
-      <a class="btn" href="#clients">Set up a client</a>
+      <a class="btn" href="#tools">What Claude can do</a>
+      <a class="btn" href="#doctor">The doctor</a>
     </div>
   </header>
 
-  <div class="pane" role="img" aria-label="The proxy pane: a request list with a filter">
-    <div class="head"><span class="live">● 127.0.0.1:8899 · 342 requests</span><span class="btns">[ Stop ] View [ List ] [ Tree ] [ Clear ] [ Setup ]</span></div>
-    <div class="filter">Filter <b>host:*.example.com is:error</b></div>
-    <div class="row"><span class="s4">401 </span> POST    https://api.example.com/v1/login            <span class="dim">1.2KB   180ms</span></div>
-    <div class="row"><span class="s5">503 </span> GET     https://api.example.com/v1/feed               <span class="dim">87B    2.1s</span></div>
-    <div class="row"><span class="s5">CERT</span> CONNECT gateway.example.com:443                       <span class="dim">0B     0ms</span></div>
+  <div class="pane" role="img" aria-label="The proxy pane: HTTP, gRPC and WebSocket rows under a filter">
+    <div class="head"><span class="live">● 127.0.0.1:8899 · 342 requests</span><span class="btns">[ Stop ] View [ List ] [ Tree ] [ Clear ] [ Setup ] [ Rules (2) ] [ Health (1) ]</span></div>
+    <div class="filter">Filter <b>host:*.api.example.com is:error</b></div>
+    <div class="row"><span class="s4">401 </span> POST    https://api.example.com/v1/login                  <span class="dim">1.2KB   180ms</span></div>
+    <div class="row"><span class="s5">200 </span> POST    <span class="claude">✎</span> https://api.example.com/pkg.Cart/Checkout          <span class="dim">  41B    95ms</span></div>
+    <div class="row"><span class="s2">101 </span> GET     wss://api.example.com/chat                       <span class="dim">↑14 ↓52      …</span></div>
+    <div class="row"><span class="s5">CERT</span> CONNECT gateway.icloud.com:443                                <span class="dim">  0B     0ms</span></div>
   </div>
 
-  <h2>Why</h2>
-  <p>Debugging a mobile or web client usually means a separate proxy app, a certificate dance on every device, and copying requests into the chat by hand. proxy keeps all of it where you already work.</p>
+  <p>Instead of copying requests into the chat, you ask:</p>
+  <div class="asks">
+    <div class="ask">“Why does checkout return 402 on the phone but not in the browser?”</div>
+    <div class="ask">“Wait while I tap Log in, then tell me what the app sent.”</div>
+    <div class="ask">“Make the feed take 3 seconds and fail one request in five.”</div>
+    <div class="ask">“Answer the price socket with a mock that sends a tick on every subscription.”</div>
+    <div class="ask">“Nothing shows up from the emulator. Fix it.”</div>
+  </div>
+  <p>Claude finds the request and reads only the part it needs. It compares the one that works with the one that fails, replays it with a change, writes a rule, and fixes your code. When something is in the way, the doctor names it and fixes it: a missing CA, a pinned certificate, a VPN, or Charles holding the system proxy.</p>
+
+  <h2>Every protocol a modern app speaks</h2>
   <div class="grid">
-    <div class="card"><h3>No separate app</h3><p>The proxy, its certificate authority and the request list live in Claude Code, behind <code>/proxy</code>.</p></div>
-    <div class="card"><h3>One click for a browser</h3><p>A separate Chrome, Edge, Brave or Chromium window whose whole traffic goes through the proxy, localhost included, with no certificate to install.</p></div>
-    <div class="card"><h3>Simulators set up for you</h3><p>The CA goes into every booted iOS Simulator with one button; the Android emulator or a USB phone is pointed at the proxy, and back, with another.</p></div>
-    <div class="card"><h3>Claude sees the traffic</h3><p>Two tools hand the model the request list and any request in full: headers and decoded bodies.</p></div>
+    <div class="card"><h3>HTTP/2 both ways</h3><p>Clients that offer h2 get it. Servers that speak it get it. Everything else gets HTTP/1.1, each side on its own.</p></div>
+    <div class="card"><h3>gRPC and protobuf</h3><p>gRPC and gRPC-Web, trailers forwarded. Messages are decoded without a schema, by field number. A failed call says why: <code>gRPC NOT_FOUND</code>.</p></div>
+    <div class="card"><h3>WebSockets, message by message</h3><p>Both ways, with timing and close codes, compression taken out of the offer so every message stays readable.</p></div>
+    <div class="card"><h3>Server-sent events, as they arrive</h3><p>Event by event, with the millisecond each one came. LLM streaming APIs, debugged.</p></div>
   </div>
 
-  <h2>Features</h2>
-  <ul>
-    <li>MITM HTTPS proxy with per-host certificates from a CA made on your machine; plain HTTP, WebSocket upgrades and server-sent events pass through.</li>
-    <li>A filter language: <code>method:POST status:4xx host:*.example.com type:json is:error -text</code>.</li>
-    <li>A tree view: requests grouped by host and path, with request and failure counts on every node.</li>
-    <li>The exact proxy address for each client, the Mac's Wi-Fi address picked over VPN tunnels and VM bridges, and a QR code a phone scans to get the certificate.</li>
-    <li>Request detail with pretty-printed JSON and gzip, brotli, deflate and zstd decoded; <strong>Copy as curl</strong> and <strong>To prompt</strong>.</li>
-    <li>Certificate trouble made visible: a client that refuses the proxy certificate, because the CA is not trusted or the app pins certificates, shows up as a <code>CERT</code> row.</li>
-    <li>A setup page served by the proxy at <code>http://claude.proxy/</code> with an iOS <code>.mobileconfig</code>, an Android <code>.crt</code> and a <code>.pem</code>.</li>
-    <li>Safe on the network: in <code>lan</code> mode phones can use it, but nothing on the network can reach this Mac's localhost through it.</li>
-    <li>Tracked domains per session: decrypt and record only your app's hosts, wildcards included; everything else passes through untouched, so a phone's own services keep working.</li>
-    <li>One-press setup: pick an iOS simulator and it boots with the CA and the system proxy on; pick an Android emulator and it starts behind the proxy; Claude Code itself keeps working.</li>
-    <li>A rules engine: delays, throttling, mocked answers, rewritten headers, URLs and JSON bodies, status codes, dropped connections and scripts, chained by priority.</li>
-    <li>No dependencies: a Node.js sidecar and <code>openssl</code>.</li>
-  </ul>
-
-  <h2 id="rules">Rules: change requests and responses</h2>
-  <p>Ask Claude in plain words, <em>"make GET /api/feed take 3 seconds"</em> or <em>"answer POST /login with a 500"</em>, and it writes the rule into the project's <code>.claude/proxy-rules.json</code>. The proxy applies it at once. The Rules view lists every rule with what it does in words, turns rules on and off, and changes their priority; every matching rule applies, in order.</p>
-<pre><code>{ "id": "slow-feed",
-  "match": { "methods": ["GET"], "path": "/v1/feed*" },
-  "request":  [{ "type": "delay", "ms": 2000 }],
-  "response": [{ "type": "setStatus", "status": 503 },
-               { "type": "mergeJson", "json": { "error": "down" } }] }</code></pre>
-  <div class="grid">
-    <div class="card"><h3>Before sending</h3><p>Delay, throttle, set or remove headers and query, send elsewhere, rewrite the URL or body, answer with a mock, drop the connection.</p></div>
-    <div class="card"><h3>On the response</h3><p>Delay, throttle, set the status, change headers, replace or merge into the JSON body, drop the connection.</p></div>
-    <div class="card"><h3>Scripts when needed</h3><p>A JavaScript step for anything else, run only once you approve it, so a cloned repository cannot run code unasked.</p></div>
-  </div>
-
-  <h2 id="clients">Set up a client</h2>
+  <h2>Every client, one press</h2>
   <div class="table-wrap">
   <table>
     <tr><th>Client</th><th>How</th></tr>
-    <tr><td>A separate browser</td><td><strong>Setup → Browser → Open Google Chrome</strong> (or Edge, Brave, Chromium): its own profile, <code>--proxy-server</code>, localhost captured, and trust by SPKI hash instead of a keychain entry.</td></tr>
-    <tr><td>iOS Simulator</td><td>Pick one and press <strong>Use</strong>: it boots, gets the CA, and the macOS system proxy points at the proxy, with Claude Code's own traffic left alone.</td></tr>
-    <tr><td>iPhone / iPad</td><td><strong>Listen on LAN</strong>, scan the QR code to install the profile, trust it, set the Wi-Fi proxy to the address the tab shows.</td></tr>
-    <tr><td>Android emulator / USB phone</td><td><strong>Start through the proxy</strong> launches an AVD with <code>-http-proxy</code>; <strong>Android → proxy</strong> points a running emulator or a USB phone, and is reverted when the proxy stops.</td></tr>
-    <tr><td>Android phone on Wi-Fi</td><td><strong>Listen on LAN</strong>, scan the QR code to get the certificate, set the Wi-Fi proxy; apps need a <code>network_security_config</code>, which the tab copies.</td></tr>
-    <tr><td>curl, Node, Python, Go</td><td><code>HTTPS_PROXY</code>, <code>NODE_EXTRA_CA_CERTS</code>, <code>SSL_CERT_FILE</code>, <code>REQUESTS_CA_BUNDLE</code>, copied from the macOS / CLI tab.</td></tr>
+    <tr><td>A separate browser</td><td>Chrome, Edge, Brave or Chromium with a profile of its own, localhost captured, trusting the proxy by SPKI hash. No certificate to install.</td></tr>
+    <tr><td>iOS Simulator</td><td><strong>Use</strong>: it boots, gets the CA, and the Mac's system proxy points here, with Claude Code's own traffic left alone.</td></tr>
+    <tr><td>iPhone / iPad</td><td>The exact address to type and a QR code that installs the profile; the tab confirms when traffic arrives.</td></tr>
+    <tr><td>Android emulator</td><td><strong>Start through the proxy</strong> launches an AVD behind it and opens the CA page. On Google APIs images, <strong>Trust in all apps</strong> makes the CA a system CA.</td></tr>
+    <tr><td>Android phone</td><td>On USB through <code>adb reverse</code>, no Wi-Fi needed; on Wi-Fi with the QR code.</td></tr>
+    <tr><td>curl, Node, Python, Go</td><td><code>HTTPS_PROXY</code>, <code>NODE_EXTRA_CA_CERTS</code>, <code>SSL_CERT_FILE</code>, <code>REQUESTS_CA_BUNDLE</code>, copied from the CLI tab.</td></tr>
   </table>
   </div>
 
-  <h2>Tools for Claude</h2>
+  <h2 id="tools">Tools for Claude</h2>
+  <p>Fifteen tools, built so Claude reads what it needs and nothing more. Long URLs are cut, requests are read part by part under one budget, and <code>json_path</code> picks one field from a megabyte of JSON.</p>
   <div class="table-wrap">
   <table>
-    <tr><th>Tool</th><th>What the model gets</th></tr>
-    <tr><td><code>mcp__wirepane__list_requests</code></td><td>The proxy's state and one line per request, filtered with the same language as the pane.</td></tr>
-    <tr><td><code>mcp__wirepane__get_request</code></td><td>One request in full: URL, status, timing, headers, decoded bodies.</td></tr>
+    <tr><th>Tool</th><th>What it does</th></tr>
+    <tr><td><code>list_requests</code></td><td>One line per request, filtered; <code>since</code> lists only what is new.</td></tr>
+    <tr><td><code>get_request</code></td><td>One request by part (summary, headers, request, response, messages), gRPC decoded, trailers, WebSocket messages, SSE events.</td></tr>
+    <tr><td><code>wait_for_request</code></td><td>Waits for the request you are about to trigger and answers it the moment it ends.</td></tr>
+    <tr><td><code>search_requests</code></td><td>Finds a value in URLs, headers, bodies, messages and events: which request returned <code>invalid_token</code>?</td></tr>
+    <tr><td><code>diff_requests</code></td><td>The request that works against the one that fails: query, headers, status, JSON field by field.</td></tr>
+    <tr><td><code>replay_request</code></td><td>Sends a request again, as it was or changed, recorded and under the rules.</td></tr>
+    <tr><td><code>send_ws_message</code>, <code>close_websocket</code></td><td>Injects a message into a live WebSocket, either way, or closes it to test reconnects.</td></tr>
+    <tr><td><code>add_rule</code>, <code>update_rule</code>, <code>remove_rule</code>, <code>list_rules</code></td><td>The rules file, applied at once.</td></tr>
+    <tr><td><code>track_domains</code></td><td>Records only your app's hosts; shows what passed through.</td></tr>
+    <tr><td><code>export_har</code></td><td>HAR 1.2 with bodies and WebSocket messages, for a teammate or Chrome DevTools.</td></tr>
+    <tr><td><code>diagnose</code></td><td>The doctor.</td></tr>
   </table>
   </div>
-  <p>Ask <em>"list the failed requests to api.example.com and tell me what they have in common"</em>, or press <strong>To prompt</strong> on a request to start the question.</p>
+  <p>Three skills ship with it:</p>
+  <ul>
+    <li><strong>debugging</strong>: the order that works.</li>
+    <li><strong>troubleshooting</strong>: symptom, check, fix, including the fix in your own app's code. Android <code>network_security_config</code>, pinning in debug builds, Flutter's <code>HttpOverrides</code>, Node, Go, Java and Docker proxies.</li>
+    <li><strong>rules</strong>: recipes, each tested to validate.</li>
+  </ul>
+
+  <h2 id="doctor">A doctor that fixes what is in the way</h2>
+  <p><code>/proxy doctor</code>, the Health view, or Claude's <code>diagnose</code> look at the whole path from the client to the server:</p>
+  <ul>
+    <li>the proxy process and the sessions sharing it;</li>
+    <li>the system proxy;</li>
+    <li>a VPN;</li>
+    <li>other proxy apps;</li>
+    <li>the CA on each client;</li>
+    <li>pinned hosts;</li>
+    <li>upstream failures;</li>
+    <li>tracked domains;</li>
+    <li>Android devices.</li>
+  </ul>
+  <p>Each finding has its fix, and a button when Wirepane can do it.</p>
+  <div class="pane health" role="img" aria-label="The Health view with findings">
+    <div class="dim">Proxy process: pid 81234, Wirepane 0.8.0, up 2 h 14 min, 61.2MB of memory, 1342 requests kept; shared: this session and 1 other (shop-web).</div>
+    <div class="f"><span class="m fail">✗</span><span>Wi-Fi points at Wirepane, but no proxy runs: Mac apps and the iOS Simulator have no internet <span class="btn-inline">Put back</span></span></div>
+    <div class="f"><span class="m warn">!</span><span>the device at 192.168.1.20 refuses the Wirepane CA for every host <span class="btn-inline">Setup</span><br><span class="fix">iPhone: install the profile, then Certificate Trust Settings → turn on Wirepane CA.</span></span></div>
+    <div class="f"><span class="m warn">!</span><span>api.payments.example refuses the Wirepane CA while other hosts work: the app pins its certificate <span class="btn-inline">Never decrypt it</span></span></div>
+    <div class="f"><span class="m warn">!</span><span>dev.local:8443 shows a certificate this Mac does not trust (a dev server?) <span class="btn-inline">Accept its certificate</span></span></div>
+    <div class="f"><span class="m info">•</span><span>emulator-5554: apps trust user CAs only with a network_security_config <span class="btn-inline">Trust in all apps</span></span></div>
+    <div class="f"><span class="m ok">✓</span><span>Only app.example.com recorded; 37 other hosts passed through</span></div>
+  </div>
+  <div class="grid">
+    <div class="card"><h3>Pinned hosts pass through</h3><p>A host that refuses the certificate twice is tunnelled untouched, so the app keeps working. It is decrypted again once the client trusts the CA.</p></div>
+    <div class="card"><h3>No internet after a crash, never again</h3><p>A watchdog puts the system proxy back if the proxy is killed, and the next session repairs it at start.</p></div>
+    <div class="card"><h3>Dev servers with self-signed certificates</h3><p>One press accepts that host's certificate, and only that host's.</p></div>
+    <div class="card"><h3>Office networks</h3><p>An upstream proxy (HTTP with credentials, SOCKS5, or a PAC file) carries every connection to the servers, and the doctor offers the network's own proxy for it.</p></div>
+  </div>
+
+  <h2 id="rules">Rules and mock servers</h2>
+  <p>Ask in plain words and Claude writes the rule into the project's <code>.claude/proxy-rules.json</code>. The proxy applies it at once. You can do:</p>
+  <ul>
+    <li>mocks, delays, throttling, errors and dropped connections;</li>
+    <li>rewritten headers, URLs and JSON;</li>
+    <li>sending requests to your local server;</li>
+    <li>GraphQL operations matched by name.</li>
+  </ul>
+  <p>For WebSockets, rules rewrite, drop, delay and answer messages, or play the whole server:</p>
+<pre><code>{ "id": "mock-prices-socket",
+  "match": { "path": "/ws/prices" },
+  "request":  [{ "type": "respond", "status": 101 }],
+  "messages": [
+    { "type": "send", "on": "open", "to": "client", "json": { "type": "hello" } },
+    { "type": "reply", "when": "\"subscribe\"", "json": { "type": "price", "price": 42.5 } } ] }</code></pre>
+
+  <h2>One proxy for every session</h2>
+  <p>A single proxy serves every Claude Code session on the Mac. A second session attaches and sees what the first recorded, and each project's rules apply while its session is open. The Health view shows the process, its memory and the sessions using it. With every session gone, the proxy puts the system proxy and Android devices back and exits.</p>
 
   <h2 id="install">Install</h2>
-  <p>Requires macOS, Claude Code 2.1.292 or newer, and <code>openssl</code> (built into macOS). The proxy runs on Node.js 18 or newer, which it finds by itself; with none, the pane offers to install it. At the Claude Code prompt:</p>
+  <p>You need macOS, Claude Code 2.1.292 or newer, and <code>openssl</code> (built into macOS). The proxy runs on Node.js 18 or newer, which it finds by itself; with none, the pane offers to install it. At the Claude Code prompt:</p>
 <pre><code>/plugin install wirepane --marketplace legostin/wirepane</code></pre>
-  <p>Answer <code>y</code> to add the marketplace and pick a scope, then run <code>/proxy</code>.</p>
+  <p>Then run <code>/proxy</code>. No account, no telemetry, no npm dependencies. The CA is made on your machine, and recordings stay in <code>~/.claude/proxy-mod</code>.</p>
 
   <h2>FAQ</h2>
-  <details><summary>Is it a replacement for Proxyman, Charles or mitmproxy?</summary><p>For everyday debugging of what an app sent and what came back, yes, without leaving Claude Code. Rules cover rewriting, mocking and throttling; there are no interactive breakpoints, HTTP/2 or gRPC.</p></details>
-  <details><summary>Do I have to install the certificate on my Mac?</summary><p>Not for the separate browser, which trusts the proxy by SPKI hash. Safari, native macOS apps and the iOS Simulator need the CA trusted; the setup tabs give the commands.</p></details>
-  <details><summary>Why do some requests show CERT?</summary><p>The client refused the proxy's certificate: its CA is not trusted yet, or the app pins its certificates. Finish the setup steps, or add the host to Hosts not to decrypt.</p></details>
-  <details><summary>Does my traffic leave my machine?</summary><p>Only for the servers it was going to anyway. The proxy listens on 127.0.0.1 unless you choose lan, recorded requests stay in ~/.claude/proxy-mod, and Claude reads a request only when it calls the tools; then that request is part of the conversation.</p></details>
+  <details><summary>Is it a replacement for Proxyman, Charles, mitmproxy or HTTP Toolkit?</summary><p>For finding out what an app sent, what came back and why it fails, yes, without leaving Claude Code: HTTP/2, gRPC, WebSockets and SSE, with rules, mocks, replays and diffs. It has no interactive breakpoints and no HTTP/3; it works behind an office proxy. It is built around the agent: the doctor, the waiting, search and diff tools, the context budget, and skills that fix the app's own code.</p></details>
+  <details><summary>Do I have to install the certificate on my Mac?</summary><p>Not for the separate browser, which trusts the proxy by SPKI hash. Safari, native Mac apps and the iOS Simulator need the CA, one press each.</p></details>
+  <details><summary>Why do some requests show CERT?</summary><p>The client refused the proxy's certificate: it does not trust the CA yet, or the app pins its certificates. The diagnose tool tells which, and a pinned host passes through after two refusals so the app keeps working.</p></details>
+  <details><summary>I see nothing from my Flutter, Go or Unity app.</summary><p>Some runtimes ignore the system proxy. The troubleshooting skill gives Claude the few lines that fix it in a debug build, such as Flutter's HttpOverrides.</p></details>
+  <details><summary>Does my traffic leave my machine?</summary><p>Only for the servers it was going to anyway. Recordings stay in ~/.claude/proxy-mod, and Claude reads a request only through a tool.</p></details>
 
   <h2>Limits</h2>
   <ul class="limits">
-    <li>Clients are offered HTTP/1.1 only, so gRPC over HTTP/2 does not get through.</li>
-    <li>WebSocket frames are not decoded; an upgrade shows as one row.</li>
-    <li>The system proxy is put back on stop, at the session's end and when Claude Code quits; only a <code>kill -9</code> of the proxy can leave it on.</li>
-    <li>Mods are an early-access Claude Code API.</li>
+    <li><strong>HTTP/3 (QUIC):</strong> it never meets an HTTP proxy. An app that forces it is not seen.</li>
+    <li><strong>h2c:</strong> plain-text HTTP/2 with prior knowledge is not supported.</li>
+    <li><strong>Breakpoints:</strong> there are none for pausing a request by hand. Rules, replays and scripts cover most of it.</li>
+    <li><strong>Protobuf:</strong> decoded without a schema, so it shows field numbers, not names.</li>
+    <li><strong>Upstream proxy:</strong> HTTP (Basic credentials), SOCKS5 and PAC files work; NTLM and Kerberos sign-in do not.</li>
+    <li><strong>Android system CA:</strong> it needs a Google APIs emulator image and lasts until a reboot. Android 17 asks for Certificate Transparency on system CAs.</li>
+    <li><strong>Platform:</strong> macOS only. Mods are an early-access Claude Code API.</li>
   </ul>
 
   <footer>
-    Wirepane is MIT licensed · <a href="https://github.com/legostin/wirepane">source</a> · <a href="https://github.com/legostin/wirepane/blob/main/docs/design.md">design notes</a> · not affiliated with Anthropic, Proxyman, Charles or mitmproxy
+    Wirepane 0.8.0 is MIT licensed · <a href="https://github.com/legostin/wirepane">source</a> · <a href="https://github.com/legostin/wirepane/blob/main/docs/design.md">design notes</a> · not affiliated with Anthropic, Proxyman, Charles, mitmproxy or HTTP Toolkit
   </footer>
 </main>
 </body>

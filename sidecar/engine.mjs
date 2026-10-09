@@ -13,6 +13,7 @@ import zlib from 'node:zlib'
 
 import {
   describeAction,
+  describeStep,
   isEnabled,
   isRegexPattern,
   matchesRequest,
@@ -21,6 +22,7 @@ import {
   needsResponseBody,
   parseRules,
   scriptsOf,
+  stepTakes,
   toRegExp,
 } from '../shared/rules.mjs'
 
@@ -41,6 +43,7 @@ function readText(path) {
  * approved, in the file's order. `onLoad` hears every (re)load.
  */
 export function createRuleSet({ rulesFile, trustFile, onLoad }) {
+  const projectRoot = rulesFile ? dirname(dirname(rulesFile)) : process.cwd()
   let active = []
   const load = () => {
     const parsed = parseRules(rulesFile ? readText(rulesFile) : null)
@@ -61,6 +64,8 @@ export function createRuleSet({ rulesFile, trustFile, onLoad }) {
         untrusted.push(rule.id)
         continue
       }
+      // a rule's files are its own project's, whichever project another rule came from
+      Object.defineProperty(rule, '__root', { value: projectRoot })
       active.push(rule)
     }
     onLoad?.({ file: rulesFile, total: parsed.rules.length, active: active.length, errors, untrusted })
@@ -72,7 +77,7 @@ export function createRuleSet({ rulesFile, trustFile, onLoad }) {
     get rules() {
       return active
     },
-    projectRoot: rulesFile ? dirname(dirname(rulesFile)) : process.cwd(),
+    projectRoot,
     close: () => watched.forEach(file => unwatchFile(file)),
   }
 }
@@ -168,8 +173,14 @@ const scripts = new Map()
  * Runs a rule's script: the body of `async (req, res, ctx) => {}`. Its
  * synchronous part is cut off after a second, the whole of it after five.
  */
-async function runScript(code, req, res, ctx, log) {
-  let entry = scripts.get(code)
+function runScript(code, req, res, ctx, log) {
+  return runFunction(code, 'req, res, ctx', [req, res, ctx], log)
+}
+
+/** A script's body as an async function of `params`, run on `args` in its own context. */
+async function runFunction(code, params, args, log) {
+  const cacheKey = `${params}\n${code}`
+  let entry = scripts.get(cacheKey)
   if (!entry) {
     const context = vm.createContext({
       console: { log: (...parts) => log(parts.map(part => (typeof part === 'string' ? part : JSON.stringify(part))).join(' ')) },
@@ -180,15 +191,15 @@ async function runScript(code, req, res, ctx, log) {
       setTimeout,
       clearTimeout,
     })
-    vm.runInContext(`globalThis.__rule = async function (req, res, ctx) {\n${code}\n}`, context, {
+    vm.runInContext(`globalThis.__rule = async function (${params}) {\n${code}\n}`, context, {
       timeout: 1000,
       filename: 'proxy-rule-script.js',
     })
     entry = { context }
     if (scripts.size > 100) scripts.clear()
-    scripts.set(code, entry)
+    scripts.set(cacheKey, entry)
   }
-  entry.context.__args = [req, res, ctx]
+  entry.context.__args = args
   const running = vm.runInContext('__rule(...__args)', entry.context, { timeout: 1000 })
   let timer
   const limit = new Promise((_, reject) => {
@@ -281,7 +292,7 @@ export async function applyRequestRules(rules, state, { projectRoot, signal, log
           note(`URL is now ${urlOf(state.target)}`)
           break
         case 'setBody': {
-          const { body, type } = await bodyFrom(action, projectRoot)
+          const { body, type } = await bodyFrom(action, rule.__root ?? projectRoot)
           state.body = body
           if (type && !getHeader(state.headers, 'content-type')) setHeader(state.headers, 'content-type', type)
           note()
@@ -304,7 +315,7 @@ export async function applyRequestRules(rules, state, { projectRoot, signal, log
           break
         }
         case 'respond': {
-          const { body, type } = await bodyFrom(action, projectRoot)
+          const { body, type } = await bodyFrom(action, rule.__root ?? projectRoot)
           const headers = pairsFrom(action.headers)
           if (type && !getHeader(headers, 'content-type')) headers.push(['content-type', type])
           state.respond = { status: action.status, headers, body }
@@ -396,7 +407,7 @@ export async function applyResponseRules(rules, state, { projectRoot, signal, lo
           note()
           break
         case 'setBody': {
-          const { body, type } = await bodyFrom(action, projectRoot)
+          const { body, type } = await bodyFrom(action, rule.__root ?? projectRoot)
           state.body = body
           if (type) setHeader(state.headers, 'content-type', type)
           note()
@@ -450,6 +461,189 @@ export async function applyResponseRules(rules, state, { projectRoot, signal, lo
       }
     }
   }
+}
+
+// --- WebSocket messages -------------------------------------------------------------
+//
+// A message is `{ direction: 'out' | 'in', opcode, data }`: out from the client
+// to the server, in the other way; `data` a Buffer, text messages in UTF-8.
+// `ctx.send(to, opcode, data)` sends another message to 'client' or 'server',
+// `ctx.close(code, reason)` closes both sides. A step marks the message
+// `isDropped` to pass nothing on.
+
+const TEXT = 1
+const BINARY = 2
+
+function textOf(message) {
+  return message.opcode === TEXT ? message.data.toString('utf8') : null
+}
+
+async function payloadFrom(step, projectRoot) {
+  const { body } = await bodyFrom(step, projectRoot)
+  // text and JSON go as text; a file as text when it reads as UTF-8
+  if (step.file === undefined) return { opcode: TEXT, data: body }
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(body)
+    return { opcode: TEXT, data: body }
+  } catch {
+    return { opcode: BINARY, data: body }
+  }
+}
+
+/** A message as a script sees it: text to read and change, JSON, and drop. */
+function scriptMessage(message) {
+  const view = {
+    direction: message.direction,
+    isBinary: message.opcode !== TEXT,
+    text: textOf(message),
+    bytes: new Uint8Array(message.data),
+    drop: false,
+    json: () => JSON.parse(view.text ?? ''),
+  }
+  return view
+}
+
+function scriptContext(ctx, log) {
+  return {
+    send: (to, value) => {
+      if (to !== 'client' && to !== 'server') throw new Error('send to client or server')
+      ctx.send(to, TEXT, bodyText(value) ?? Buffer.alloc(0))
+    },
+    close: (code = 1000, reason = '') => ctx.close(code, reason),
+    log,
+  }
+}
+
+/** Applies the steps of `rules` (matched on the upgrade request) to one message. */
+export async function applyMessageRules(rules, message, ctx) {
+  const { projectRoot, signal, log } = ctx
+  for (const rule of rules) {
+    for (const step of rule.messages ?? []) {
+      if (message.isDropped || signal?.aborted) return message
+      if (!stepTakes(step, { direction: message.direction, text: textOf(message) })) continue
+      const note = text => log(rule.id, text ?? describeStep(step))
+      switch (step.type) {
+        case 'replaceMessage': {
+          const text = textOf(message)
+          if (text === null) break
+          const next = replaceText(text, step.pattern, step.with)
+          if (next !== text) {
+            message.data = Buffer.from(next)
+            note()
+          }
+          break
+        }
+        case 'setMessage': {
+          const payload = await payloadFrom(step, rule.__root ?? projectRoot)
+          message.opcode = payload.opcode
+          message.data = payload.data
+          note()
+          break
+        }
+        case 'mergeJson': {
+          const text = textOf(message)
+          try {
+            message.data = Buffer.from(JSON.stringify(deepMerge(JSON.parse(text ?? ''), step.json)))
+            note()
+          } catch {
+            note('not JSON: merge skipped')
+          }
+          break
+        }
+        case 'drop':
+          message.isDropped = true
+          message.fate = 'dropped'
+          note()
+          break
+        case 'delay': {
+          const ms = step.msMax !== undefined ? step.ms + Math.random() * (step.msMax - step.ms) : step.ms
+          note(`wait ${Math.round(ms)} ms`)
+          await sleep(ms, signal)
+          break
+        }
+        case 'reply': {
+          const payload = await payloadFrom(step, rule.__root ?? projectRoot)
+          ctx.send(message.direction === 'out' ? 'client' : 'server', payload.opcode, payload.data)
+          message.isDropped = true
+          message.fate = 'answered'
+          note()
+          break
+        }
+        case 'send': {
+          const payload = await payloadFrom(step, rule.__root ?? projectRoot)
+          ctx.send(step.to, payload.opcode, payload.data)
+          note()
+          break
+        }
+        case 'close':
+          ctx.close(step.code ?? 1000, step.reason ?? '')
+          message.isDropped = true
+          message.fate = 'closed'
+          note()
+          break
+        case 'script': {
+          const view = scriptMessage(message)
+          const before = view.text
+          try {
+            await runFunction(step.code, 'msg, ctx', [view, scriptContext(ctx, text => log(rule.id, text))], text => log(rule.id, text))
+            if (view.drop) {
+              message.isDropped = true
+              message.fate = 'dropped'
+              note('script: dropped')
+            } else if (view.text !== before && typeof view.text === 'string') {
+              message.opcode = TEXT
+              message.data = Buffer.from(view.text)
+              note('script: changed the message')
+            }
+          } catch (error) {
+            note(`script failed: ${error.message}`)
+          }
+          break
+        }
+      }
+    }
+  }
+  return message
+}
+
+/** Carries out the steps `on: 'open'` of `rules` as the WebSocket opens. */
+export async function applyOpenRules(rules, ctx) {
+  const { projectRoot, signal, log } = ctx
+  for (const rule of rules) {
+    for (const step of rule.messages ?? []) {
+      if (step.on !== 'open' || signal?.aborted) continue
+      const note = text => log(rule.id, text ?? describeStep(step))
+      switch (step.type) {
+        case 'send': {
+          const payload = await payloadFrom(step, rule.__root ?? projectRoot)
+          ctx.send(step.to, payload.opcode, payload.data)
+          note()
+          break
+        }
+        case 'close':
+          ctx.close(step.code ?? 1000, step.reason ?? '')
+          note()
+          return
+        case 'delay':
+          note(`wait ${step.ms} ms`)
+          await sleep(step.ms, signal)
+          break
+        case 'script':
+          try {
+            await runFunction(step.code, 'msg, ctx', [null, scriptContext(ctx, text => log(rule.id, text))], text => log(rule.id, text))
+            note('script ran on open')
+          } catch (error) {
+            note(`script failed: ${error.message}`)
+          }
+          break
+      }
+    }
+  }
+}
+
+/** Whether `rules` hold back the messages going `direction`, to act on them before passing them on. */
+export function holdsMessages(rules, direction) {
+  return rules.some(rule => (rule.messages ?? []).some(step => (step.on ?? 'message') === 'message' && [direction, 'both', undefined].includes(step.direction)))
 }
 
 // --- choosing rules ----------------------------------------------------------------

@@ -25,3 +25,11 @@ jobs:
         run: node --test sidecar/rules.spec.mjs
       - name: Run the self guard's tests (Claude Code is never decrypted)
         run: node --test sidecar/selfguard.spec.mjs
+      - name: Run the HTTP/2 and gRPC tests
+        run: node --test --test-force-exit sidecar/h2.spec.mjs sidecar/protobuf.spec.mjs
+      - name: Run the WebSocket and server-sent events tests
+        run: node --test --test-force-exit sidecar/websocket.spec.mjs sidecar/ws.spec.mjs sidecar/sse.spec.mjs
+      - name: Run the control, pinning, watchdog and shared proxy tests
+        run: node --test --test-force-exit sidecar/control.spec.mjs sidecar/pinning.spec.mjs sidecar/watchdog.spec.mjs sidecar/shared.spec.mjs sidecar/upstream.spec.mjs
+      - name: Check the skills (their rule recipes validate)
+        run: node --test sidecar/skills.spec.mjs

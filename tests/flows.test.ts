@@ -6,6 +6,8 @@ import {
   type FlowDetail,
   flowTable,
   flowUrl,
+  grpcLabel,
+  isFailure,
   mergeFlows,
   parseEvent,
   parseFilter,
@@ -175,5 +177,31 @@ describe('formats', () => {
     expect(clip('a\nb\nc', 2, 100)).toEqual({ text: 'a\nb', isClipped: true })
     expect(clip('abcdef', 10, 3)).toEqual({ text: 'abc', isClipped: true })
     expect(clip('ok', 10, 10)).toEqual({ text: 'ok', isClipped: false })
+  })
+})
+
+describe('gRPC and HTTP/2', () => {
+  const ok = flow(1, { contentType: 'application/grpc', httpVersion: '2', grpcStatus: 0 })
+  const missing = flow(2, { contentType: 'application/grpc+proto', httpVersion: '2', grpcStatus: 5, grpcMessage: 'no such greeter' })
+  const plain = flow(3, { httpVersion: '1.1' })
+
+  test('a gRPC call is its own type, and a non-zero status is a failure', () => {
+    expect(typeOf(ok)).toBe('grpc')
+    expect(isFailure(ok)).toBe(false)
+    expect(isFailure(missing)).toBe(true)
+    expect(grpcLabel(missing)).toBe('gRPC NOT_FOUND: no such greeter')
+    expect(grpcLabel(plain)).toBeNull()
+  })
+
+  test('the filter finds HTTP/2, gRPC and failed calls', () => {
+    const all = [ok, missing, plain]
+    expect(filterFlows(all, 'is:h2').map(f => f.id)).toEqual([1, 2])
+    expect(filterFlows(all, 'type:grpc is:error').map(f => f.id)).toEqual([2])
+    expect(parseFilter('is:grpc').errors).toEqual([])
+  })
+
+  test('the model table says why a gRPC call failed', () => {
+    expect(flowTable([missing])).toContain('! gRPC NOT_FOUND: no such greeter')
+    expect(flowTable([ok])).not.toContain('!')
   })
 })
